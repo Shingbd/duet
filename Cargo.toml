@@ -1,0 +1,20 @@
+[package]
+name = "duet-workbench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Local-first terminal workspace for human-AI code review and learning"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
