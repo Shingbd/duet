@@ -113,6 +113,25 @@ fn escape_does_not_abort_agent() {
 }
 
 #[test]
+fn coding_task_requires_explicit_confirmation_and_can_be_cancelled() {
+    let mut app = App::empty(Keymap::default());
+    app.act(Action::Palette);
+    for c in "code fix bug".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::ConfirmCode { .. }));
+    assert!(app.requested_task.is_none());
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.requested_task.is_none());
+    app.mode = Mode::ConfirmCode {
+        prompt: "fix bug".into(),
+    };
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.requested_task.as_deref(), Some("fix bug"));
+}
+
+#[test]
 fn mark_read_requires_confirmation() {
     let mut app = fixture_app();
     app.act(Action::MarkRead);

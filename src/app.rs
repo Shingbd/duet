@@ -32,6 +32,7 @@ pub enum Mode {
     Help,
     Input { search: bool, text: String },
     ConfirmRead,
+    ConfirmCode { prompt: String },
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,7 @@ pub struct App {
     pub cancel_requested: bool,
     pub history: Vec<String>,
     pub task: Option<String>,
+    pub requested_task: Option<String>,
     pub keymap: Keymap,
     pub quit: bool,
     pub notes: Vec<String>,
@@ -92,6 +94,7 @@ impl App {
             cancel_requested: false,
             history: Vec::new(),
             task: None,
+            requested_task: None,
             keymap,
             quit: false,
             notes: Vec::new(),
@@ -203,6 +206,15 @@ impl App {
             }
             Mode::Help => {
                 if key.code == KeyCode::Esc || self.keymap.resolve(key) == Some(Action::Help) {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::ConfirmCode { prompt } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_task = Some(prompt.clone());
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
                 }
                 return;
@@ -323,6 +335,18 @@ impl App {
             "project" => self.view = View::Project,
             "knowledge" => self.view = View::Knowledge,
             "read" => self.act(Action::MarkRead),
+            value if value.starts_with("code ") => {
+                if matches!(
+                    self.run.status,
+                    crate::rpc::RunStatus::Running | crate::rpc::RunStatus::Cancelling
+                ) {
+                    self.status = "已有任务运行中".into();
+                } else if !value[5..].trim().is_empty() {
+                    self.mode = Mode::ConfirmCode {
+                        prompt: value[5..].trim().into(),
+                    };
+                }
+            }
             value if value.starts_with("note ") => {
                 let note = if let Some(item) = self.current() {
                     format!("{} @ {}：{}", item.title, item.version, &value[5..])

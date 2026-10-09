@@ -260,6 +260,28 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             {
                 coding.cancel(&mut app)?;
             }
+            if let Some(prompt) = app.requested_task.take() {
+                let project = store
+                    .directory()
+                    .parent()
+                    .context("项目目录无效")?
+                    .to_owned();
+                match CodingRun::start(
+                    &project,
+                    Path::new("pi"),
+                    None,
+                    &prompt,
+                    Duration::from_secs(600),
+                    &mut store,
+                    &mut app,
+                ) {
+                    Ok(new_run) => coding = Some(new_run),
+                    Err(error) => {
+                        app.run.status = duet_workbench::rpc::RunStatus::Failed;
+                        app.status = format!("无法开始：{error}");
+                    }
+                }
+            }
             store.save(&app)?;
             if app.status == "笔记已记录 · 仅本次会话" {
                 app.status = "笔记已保存".into();

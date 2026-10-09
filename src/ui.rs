@@ -214,6 +214,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let cursor = (2 + text.width()).min(area.width.saturating_sub(2) as usize) as u16;
             frame.set_cursor_position((area.x + cursor, area.y + 1));
         }
+        Mode::ConfirmCode { prompt } => popup(
+            frame,
+            theme,
+            " 授权 AI 编码 ",
+            vec![
+                Line::from(safe_text(prompt)),
+                Line::from("代码可能外发 · 文件工具非安全沙箱"),
+                Line::from("Enter 授权 · Esc 取消"),
+            ],
+            72,
+            7,
+        ),
         Mode::ConfirmRead => popup(
             frame,
             theme,

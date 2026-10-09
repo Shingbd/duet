@@ -27,6 +27,8 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
 ./target/debug/duet-workbench code --repo /path/to/project --prompt "具体改动要求" --allow-write
 ```
 
+也可以在已打开的工作台中输入 `:code 具体改动要求`，确认授权后开始编码。
+
 需要 Git 已提交基线及已配置模型/认证的 Pi。默认使用 Pi 当前模型，可指定 `--model provider/model`。
 
 - 创建独立 worktree 和任务分支，原工作区不变。
