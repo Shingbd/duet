@@ -21,6 +21,7 @@ with tempfile.TemporaryDirectory(prefix='duet-chat-') as directory:
     project = base / 'project'
     project.mkdir()
     (project / 'main.rs').write_text('baseline\n')
+    (project / 'b.rs').write_text('unchanged\n')
     for args in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Probe', '-c', 'user.email=probe@localhost', 'commit', '-qm', 'fixture']]:
         subprocess.run(['git', '-C', str(project), *args], check=True, stdout=subprocess.DEVNULL)
     fake = base / 'fake-pi'
@@ -54,6 +55,7 @@ for line in sys.stdin.buffer:
   emit({'type':'message_end','message':{'role':'assistant','content':[]}})
   if prompts==1:
    pathlib.Path('main.rs').write_text('draft')
+   pathlib.Path('a.rs').write_text('added')
    text='initial plan'
   else:
    assert r['message'] in ['correct the approach', 'explain the change']
@@ -131,13 +133,18 @@ for line in sys.stdin.buffer:
         drain(0.4)
         with sqlite3.connect(database) as db:
             saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
-        assert saved['selected'][1] == 'main.rs', saved
-        send(b']')
+        assert saved['selected'][1] == 'a.rs', saved
+        send(b'\t\tj')  # Reader -> Evidence -> Queue; skip unchanged b.rs.
         drain(0.4)
         with sqlite3.connect(database) as db:
             saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
             checkpoint = db.execute('SELECT checkpoint FROM runs').fetchone()[0]
         assert saved['selected'] == [checkpoint, 'main.rs'], saved
+        send(b'k')
+        drain(0.4)
+        with sqlite3.connect(database) as db:
+            saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
+        assert saved['selected'] == [checkpoint, 'a.rs'], saved
         send(b'q')
         assert process.wait(timeout=3) == 0
         assert termios.tcgetattr(slave) == before

@@ -249,6 +249,14 @@ impl App {
             })
             .collect()
     }
+    /// The sidebar and every file navigation action share this exact projection.
+    pub fn visible_file_indices(&self) -> Vec<usize> {
+        if self.view == View::Review {
+            self.changed_indices()
+        } else {
+            self.file_indices()
+        }
+    }
     fn open_review(&mut self) {
         if let Some(index) = self.changed_indices().first() {
             self.selected = *index;
@@ -481,15 +489,10 @@ impl App {
         self.filter.clear();
     }
     fn move_item(&mut self, delta: isize) {
-        self.move_in(self.file_indices(), delta);
+        self.move_in(self.visible_file_indices(), delta);
     }
     fn move_review_item(&mut self, delta: isize) {
-        let changed = self.changed_indices();
-        if self.view == View::Review && !changed.is_empty() {
-            self.move_in(changed, delta);
-        } else {
-            self.move_item(delta);
-        }
+        self.move_item(delta);
     }
 
     fn command(&mut self, command: &str) {

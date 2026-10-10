@@ -48,6 +48,7 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
 
     try:
         drain(0.6)
+        send(b"3")  # Baseline file navigation belongs to the project view.
         send(b"jJK")
         assert state()[1] == 1
         send(b"jk")

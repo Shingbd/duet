@@ -108,6 +108,45 @@ fn review_lists_only_changed_paths_once_and_shows_file_scoped_colored_diff() {
 }
 
 #[test]
+fn jk_follows_visible_review_files_and_project_navigation_keeps_all_files() {
+    let (_dir, _repo, _snapshot, mut app) = setup();
+    app.act(Action::Review);
+    app.panel = Panel::Queue;
+    let key = |c| {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    };
+    for (c, expected) in [
+        ('j', "d.rs"),
+        ('j', "n.rs"),
+        ('j', "n.rs"),
+        ('k', "d.rs"),
+        ('k', "a.rs"),
+        ('k', "a.rs"),
+    ] {
+        app.handle_key(key(c));
+        assert_eq!(app.current().unwrap().title, expected);
+        assert!(app.visible_file_indices().contains(&app.selected));
+    }
+    app.act(Action::Project);
+    app.handle_key(key('j'));
+    assert_eq!(app.current().unwrap().title, "b.rs");
+    app.act(Action::Review);
+    app.panel = Panel::Queue;
+    app.latest_checkpoint = None;
+    let selected = app.selected;
+    for c in ['j', 'k'] {
+        app.handle_key(key(c));
+    }
+    assert_eq!(
+        app.selected, selected,
+        "empty review must not navigate hidden baseline files"
+    );
+}
+
+#[test]
 fn legacy_prefixed_selection_and_progress_survive_plain_git_style_paths() {
     let (dir, repo, snapshot, mut app) = setup();
     app.act(Action::Review);

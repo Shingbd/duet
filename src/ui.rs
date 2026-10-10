@@ -289,11 +289,7 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
 }
 
 fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let indices = if app.view == View::Review {
-        app.changed_indices()
-    } else {
-        app.file_indices()
-    };
+    let indices = app.visible_file_indices();
     let selected_path = app.current().map(|item| item.title.as_str());
     let selected_row = indices
         .iter()
