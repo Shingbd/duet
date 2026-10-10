@@ -45,6 +45,7 @@ fn setup(count: usize, mode: &str) -> (tempfile::TempDir, std::path::PathBuf, Wo
 import json,os,pathlib,sys
 count={count}
 mode={mode:?}
+code_turn=0
 planner=sys.argv[sys.argv.index('--tools')+1]=='read,grep,find,ls'
 def emit(r): print(json.dumps(r),flush=True)
 for line in sys.stdin:
@@ -58,7 +59,8 @@ for line in sys.stdin:
    output=json.dumps({{'schema_version':1,'objective':'goal','constraints':['keep baseline'],'acceptance':['all files correct'],'nodes':nodes}}) if mode!='invalid' else 'not json'
   else:
    node=json.loads(r['message'].split('\n当前节点契约：')[1].split('\n明确补充意见：')[0])
-   pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
+   code_turn+=1
+   if mode!='nochange' and (mode!='nochange_once' or code_turn>1): pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
    if mode=='violate': pathlib.Path('outside.txt').write_text('outside')
    output='implemented '+node['id']+'; tests not run'
   emit({{'type':'message_end','message':{{'role':'assistant','content':[{{'type':'text','text':output}}]}}}})
@@ -411,6 +413,116 @@ fn node_rework_keeps_old_checkpoint_approval_and_pinned_reading_version() {
     assert!(app.body().contains("+n2"));
     assert!(!app.body().contains("file1.txt"));
     assert!(app.node_evidence().unwrap().contains("待审"));
+}
+
+#[test]
+fn zero_file_delivery_is_not_implementation_and_requires_correction_before_continuing() {
+    use duet_workbench::{app::Mode, keymap::Action};
+    let (dir, fake, mut store, mut app) = setup(2, "nochange_once");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(run.is_waiting());
+    assert_eq!(app.tasks[0].nodes[0].execution, Execution::NoChanges);
+    assert_eq!(app.tasks[0].nodes[0].attempts[0].changed_files, Some(0));
+    assert_eq!(app.tasks[0].nodes[1].execution, Execution::Planned);
+    app.act(Action::Review);
+    assert!(app.body().contains("未交付"));
+    app.act(Action::ApproveNode);
+    assert_eq!(app.mode, Mode::Browse);
+    assert!(app.status.contains("未交付"));
+    assert!(run.resume(&mut app, &mut store).is_err());
+    run.interact(
+        RunControl::Say("请实际修改文件，不要只给方案".into()),
+        &mut app,
+        &mut store,
+    )
+    .unwrap();
+    run.resume(&mut app, &mut store).unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(run.is_finished());
+    assert_eq!(app.tasks[0].nodes[0].execution, Execution::Implemented);
+    assert_eq!(
+        app.tasks[0].nodes[0].attempts[0].execution,
+        Execution::NoChanges
+    );
+    assert_eq!(app.tasks[0].nodes[0].attempts.len(), 2);
+    assert_eq!(app.tasks[0].nodes[1].execution, Execution::Implemented);
+}
+
+#[test]
+fn all_approved_nodes_still_have_browsable_scoped_diffs() {
+    use duet_workbench::{app::TaskSelection, keymap::Action};
+    let (dir, fake, mut store, mut app) = setup(2, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    for node in &mut app.tasks[0].nodes {
+        let cp = node.checkpoint().unwrap().to_owned();
+        node.approve(&cp).unwrap();
+    }
+    app.select_task_entry(TaskSelection {
+        task_id: run.id.clone(),
+        node_id: None,
+    });
+    app.act(Action::Review);
+    assert!(app.body().contains("+n1"));
+    app.act(Action::NextNode);
+    assert!(app.body().contains("+n2"));
+    app.act(Action::PreviousNode);
+    assert!(app.body().contains("+n1"));
+}
+
+#[test]
+fn schema_four_repairs_legacy_false_completion_using_immutable_checkpoint() {
+    let (dir, fake, mut store, mut app) = setup(2, "nochange");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    run.stop(&mut app, &mut store).unwrap();
+    let node = &mut app.tasks[0].nodes[0];
+    let cp = node.checkpoint().unwrap().to_owned();
+    node.execution = Execution::Implemented;
+    node.attempts[0].execution = Execution::Implemented;
+    node.attempts[0].changed_files = None;
+    store.save_task(&app.tasks[0]).unwrap();
+    drop(run);
+    drop(store);
+    let db = rusqlite::Connection::open(dir.path().join(".duet/workspace.db")).unwrap();
+    db.pragma_update(None, "user_version", 3).unwrap();
+    drop(db);
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    let mut tasks = store.tasks().unwrap();
+    let task = tasks.remove(0);
+    assert_eq!(task.nodes[0].execution, Execution::NoChanges);
+    assert_eq!(task.nodes[0].attempts[0].execution, Execution::NoChanges);
+    assert_eq!(task.nodes[0].checkpoint(), Some(cp.as_str()));
+    assert_eq!(task.nodes[0].review, Review::Pending);
+    assert_eq!(task.nodes[1].execution, Execution::Planned);
 }
 
 use duet_workbench::nodes::TaskState;

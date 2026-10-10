@@ -53,6 +53,44 @@ fn approval_shortcut_is_configurable_contextual_and_never_fires_in_input_modes()
     }
 }
 
+#[test]
+fn pi_label_describes_current_host_session_not_external_pi_availability() {
+    let mut app = App::empty(Keymap::default());
+    assert_eq!(app.pi_session_label(), "Pi 会话未启动");
+    app.agent_connected = true;
+    app.run.status = RunStatus::Running;
+    assert_eq!(app.pi_session_label(), "Pi 会话运行中");
+    app.run.status = RunStatus::Settled;
+    assert!(app.pi_session_label().contains("空闲"));
+    app.agent_connected = false;
+    assert_eq!(app.pi_session_label(), "Pi 会话已结束");
+    app.run.status = RunStatus::Failed;
+    assert_eq!(app.pi_session_label(), "Pi 会话失败");
+    app.tasks.push(duet_workbench::nodes::TaskRecord::legacy(
+        "history",
+        "old task",
+        "old session",
+    ));
+    app.select_task_entry(duet_workbench::app::TaskSelection {
+        task_id: "history".into(),
+        node_id: None,
+    });
+    app.act(Action::Tasks);
+    assert_eq!(app.pi_session_label(), "Pi 会话失败");
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| ui::draw(f, &app)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>()
+        .replace(' ', "");
+    assert!(rendered.contains("Pi会话失败"));
+    assert!(!rendered.contains("Pi未连接"));
+}
+
 fn item() -> ReadingItem {
     ReadingItem {
         title: "test.rs".into(),

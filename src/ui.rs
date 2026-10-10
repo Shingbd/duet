@@ -118,11 +118,7 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                 format!(
                     " {}  ·  {}  ·  待读 {}",
                     safe_text(&app.branch),
-                    if app.agent_connected {
-                        format!("Pi {:?}", app.run.status)
-                    } else {
-                        "Pi 未连接".into()
-                    },
+                    app.pi_session_label(),
                     app.pending()
                 ),
                 Style::default().fg(theme.muted),
@@ -474,7 +470,7 @@ fn review_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         )
         .block(theme.block(
             format!(
-                " 待审节点 · {} / {} ",
+                " 节点审核 · {} / {} ",
                 app.keymap.hint(Action::PreviousNode),
                 app.keymap.hint(Action::NextNode)
             ),

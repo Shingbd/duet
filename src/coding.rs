@@ -340,6 +340,14 @@ impl CodingRun {
     pub fn resume(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
         if self.waiting {
             ensure!(app.run.status == RunStatus::Paused, "节点边界尚未暂停");
+            if let Phase::Node(index) = self.phase {
+                ensure!(
+                    app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index].execution
+                        != Execution::NoChanges
+                        || !self.corrections.is_empty(),
+                    "当前节点没有交付文件，请先 i 输入实施纠正，再 p 继续；不能直接跳过"
+                );
+            }
             ensure!(!self.remaining.is_zero(), "任务时间预算已耗尽");
             self.deadline = Instant::now() + self.remaining;
             self.waiting = false;
@@ -837,12 +845,14 @@ impl CodingRun {
                 .map(|c| c.path.clone())
                 .collect();
             node.execution = match status {
+                RunStatus::Settled if changes.is_empty() => Execution::NoChanges,
                 RunStatus::Settled if violations.is_empty() => Execution::Implemented,
                 RunStatus::Aborted => Execution::Cancelled,
                 _ => Execution::Failed,
             };
             let attempt = node.attempts.last_mut().context("节点执行记录缺失")?;
             attempt.execution = node.execution;
+            attempt.changed_files = Some(changes.len());
             attempt.checkpoint = Some(snapshot.commit.clone());
             attempt.summary = app.run.text.clone();
             attempt.scope_violations = violations.clone();
@@ -861,6 +871,14 @@ impl CodingRun {
                 app.status = "节点已停止 · 已有改动留在固定检查点，未验收".into();
                 store.finish_run(&self.id, &format!("{status:?}"), self.checkpoint.as_deref())?;
                 return Ok(());
+            }
+            if changes.is_empty() {
+                self.remaining = self.deadline.saturating_duration_since(Instant::now());
+                self.waiting = true;
+                app.run.status = RunStatus::Paused;
+                app.status = "节点未交付代码：没有文件变更 · 不算实现完成；i 纠正后 p 继续".into();
+                store.finish_run(&self.id, "Paused", self.checkpoint.as_deref())?;
+                return self.sync_state(app, store);
             }
             self.start_next(app, store)
         })();

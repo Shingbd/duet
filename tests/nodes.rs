@@ -41,6 +41,17 @@ fn strict_plan_parser_validates_required_fields_and_dependency_order() {
     assert!(TaskPlan::parse(&raw.to_string()).is_err());
 }
 #[test]
+fn planning_stage_permissions_cannot_leak_into_implementation_contracts() {
+    let mut p = plan();
+    p.constraints = vec!["仅规划，不写入文件、不执行实现".into()];
+    assert!(p.validate().is_err());
+    p.constraints = vec!["产品功能读取只读数据，不改变数据库".into()];
+    assert!(p.validate().is_ok());
+    p.nodes[0].constraints = vec!["仅规划，不执行实现".into()];
+    assert!(p.validate().is_err());
+}
+
+#[test]
 fn invalid_plans_never_enter_execution() {
     for mutation in 0..6 {
         let mut p = plan();
@@ -106,7 +117,7 @@ fn schema_three_restores_all_task_nodes_and_interrupts_without_auto_running() {
     assert_eq!(
         db.pragma_query_value::<u32, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        3
+        4
     );
 }
 #[test]

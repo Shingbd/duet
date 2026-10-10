@@ -132,6 +132,7 @@ fn execution_label(s: Execution) -> &'static str {
         Execution::Running => "执行中",
         Execution::Paused => "已暂停",
         Execution::Implemented => "实现完成",
+        Execution::NoChanges => "未交付（无文件改动）",
         Execution::Failed => "失败",
         Execution::Cancelled => "已取消",
         Execution::Interrupted => "已中断",
@@ -326,6 +327,23 @@ impl App {
         Ok(())
     }
 
+    /// Current host RPC session, never external Pi availability or selected history.
+    pub fn pi_session_label(&self) -> &'static str {
+        match (&self.run.status, self.agent_connected) {
+            (RunStatus::Failed, _) => "Pi 会话失败",
+            (RunStatus::Idle, false) => "Pi 会话未启动",
+            (RunStatus::Settled, false) => "Pi 会话已结束",
+            (RunStatus::Aborted, false) => "Pi 会话已结束 · 已中断",
+            (RunStatus::Running, true) => "Pi 会话运行中",
+            (RunStatus::Pausing, true) => "Pi 会话暂停中",
+            (RunStatus::Paused, true) => "Pi 会话已暂停",
+            (RunStatus::Cancelling, true) => "Pi 会话取消中",
+            (RunStatus::Settled, true) => "Pi 会话空闲 · 本轮结束",
+            (RunStatus::Idle, true) => "Pi 会话空闲",
+            (RunStatus::Aborted, true) => "Pi 会话已中断",
+            (_, false) => "Pi 当前会话未连接",
+        }
+    }
     pub fn selected_task(&self) -> Option<&TaskRecord> {
         self.task_selection
             .as_ref()
@@ -356,15 +374,7 @@ impl App {
             let nodes: Vec<_> = task
                 .nodes
                 .iter()
-                .filter(|n| {
-                    !review_only
-                        || (n.published_checkpoint().is_some()
-                            && (n.review != Review::Approved
-                                || self.task_selection.as_ref().is_some_and(|s| {
-                                    s.task_id == task.id
-                                        && s.node_id.as_deref() == Some(&n.contract.id)
-                                })))
-                })
+                .filter(|n| !review_only || n.published_checkpoint().is_some())
                 .collect();
             if review_only && nodes.is_empty() && (task.plan.is_some() || task.checkpoint.is_none())
             {
@@ -528,12 +538,23 @@ impl App {
         let Some(node) = self.selected_node() else {
             return;
         };
+        if node.execution == Execution::NoChanges {
+            self.status =
+                "节点未交付文件，不能把只读方案批准为实现；请纠正或重新提交修改任务".into();
+            return;
+        }
         let Some(checkpoint) = self.review_checkpoint() else {
             self.status = "节点尚无检查点".into();
             return;
         };
         if node.execution != Execution::Implemented || node.checkpoint() != Some(checkpoint) {
             self.status = "只能批准当前已完成节点版本；旧版本或失败节点不能放行".into();
+            return;
+        }
+        if node.review == Review::Approved
+            && node.reviewed_checkpoint.as_deref() == Some(checkpoint)
+        {
+            self.status = "该节点版本已批准，仍可查看文件；未自动测试或合并".into();
             return;
         }
         self.mode = Mode::ConfirmNodeApproval {
@@ -1092,7 +1113,14 @@ impl App {
                         return self.node_evidence().unwrap();
                     }
                     if !self.changed_indices().contains(&self.selected) {
-                        return "该节点当前没有可显示的文件变更".into();
+                        return if self
+                            .selected_node()
+                            .is_some_and(|n| n.execution == Execution::NoChanges)
+                        {
+                            "节点未交付代码：没有文件变更，不能视为实现完成。".into()
+                        } else {
+                            "该节点当前没有可显示的文件变更".into()
+                        };
                     }
                 }
                 let Some(item) = self.current() else {

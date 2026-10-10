@@ -113,7 +113,7 @@ impl WorkspaceStore {
             fs::set_permissions(&database, fs::Permissions::from_mode(0o600))?;
         }
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        ensure!(version <= 3, "项目数据版本 {version} 高于当前程序支持版本");
+        ensure!(version <= 4, "项目数据版本 {version} 高于当前程序支持版本");
         if version == 0 {
             let tx = connection.transaction()?;
             tx.execute_batch(
@@ -154,6 +154,9 @@ impl WorkspaceStore {
                 PRAGMA user_version=3;")?;
             tx.commit()?;
         }
+        if version < 4 {
+            connection.pragma_update(None, "user_version", 4)?;
+        }
         connection.pragma_update(None, "foreign_keys", true)?;
         // Exclusive project lock ensures these cannot belong to another live instance.
         connection.execute(
@@ -190,7 +193,48 @@ impl WorkspaceStore {
             task.checkpoint = checkpoint;
             store.save_task(&task)?;
         }
+        let repository = crate::checkpoint::Repository::open(&project).ok();
         for mut task in store.tasks()? {
+            // Repair false completion using immutable diffs, not prose or mutable files.
+            for node in &mut task.nodes {
+                for attempt in &mut node.attempts {
+                    if attempt.execution == crate::nodes::Execution::Implemented
+                        && attempt.changed_files.is_none()
+                        && let Some(cp) = &attempt.checkpoint
+                        && let Some(repo) = &repository
+                        && let Ok(snapshot) = repo.resolve_snapshot(cp)
+                        && snapshot.parent.is_some()
+                        && let Ok(changes) = repo.snapshot_changes(&snapshot)
+                    {
+                        attempt.changed_files = Some(changes.len());
+                    }
+                    if attempt.execution == crate::nodes::Execution::Implemented
+                        && attempt.changed_files == Some(0)
+                    {
+                        attempt.execution = crate::nodes::Execution::NoChanges;
+                    }
+                }
+                if node.execution == crate::nodes::Execution::Implemented
+                    && node
+                        .attempts
+                        .last()
+                        .is_some_and(|a| a.execution == crate::nodes::Execution::NoChanges)
+                {
+                    node.execution = crate::nodes::Execution::NoChanges;
+                }
+            }
+            if task.state == TaskState::Implemented
+                && task
+                    .nodes
+                    .iter()
+                    .any(|n| n.execution == crate::nodes::Execution::NoChanges)
+            {
+                task.state = TaskState::Interrupted;
+                store.connection.execute(
+                    "UPDATE runs SET status='Interrupted' WHERE id=?1",
+                    [&task.id],
+                )?;
+            }
             task.interrupt();
             store.save_task(&task)?;
         }

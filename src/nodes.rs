@@ -32,6 +32,21 @@ pub struct TaskPlan {
     pub acceptance: Vec<String>,
     pub nodes: Vec<NodeContract>,
 }
+fn planning_only_constraint(value: &str) -> bool {
+    let value = value.trim().to_lowercase();
+    [
+        "仅规划",
+        "仅做规划",
+        "只做规划",
+        "仅计划",
+        "只做计划",
+        "planning only",
+        "read-only planning",
+        "only planning",
+    ]
+    .iter()
+    .any(|s| value.starts_with(s))
+}
 fn text(value: &str) -> Result<()> {
     ensure!(
         !value.trim().is_empty() && value.len() <= 32_768,
@@ -81,6 +96,10 @@ impl TaskPlan {
         );
         text(&self.objective)?;
         list(&self.constraints, false)?;
+        ensure!(
+            !self.constraints.iter().any(|c| planning_only_constraint(c)),
+            "规划器把仅规划/禁止实现的阶段限制混入任务契约，拒绝进入编码；请明确修改需求并重新拆分"
+        );
         list(&self.acceptance, true)?;
         ensure!(
             !self.nodes.is_empty() && self.nodes.len() <= MAX_NODES,
@@ -104,6 +123,10 @@ impl TaskPlan {
             list(&node.scope, true)?;
             list(&node.boundaries, true)?;
             list(&node.constraints, false)?;
+            ensure!(
+                !node.constraints.iter().any(|c| planning_only_constraint(c)),
+                "节点契约混入仅规划/禁止实现的阶段限制，拒绝进入编码"
+            );
             list(&node.acceptance, true)?;
             list(&node.dependencies, false)?;
             for path in &node.scope {
@@ -172,6 +195,7 @@ pub enum Execution {
     Running,
     Paused,
     Implemented,
+    NoChanges,
     Failed,
     Cancelled,
     Interrupted,
@@ -214,6 +238,8 @@ impl TaskState {
 pub struct Attempt {
     pub base: String,
     pub checkpoint: Option<String>,
+    #[serde(default)]
+    pub changed_files: Option<usize>,
     pub execution: Execution,
     pub summary: String,
     pub scope_violations: Vec<String>,
@@ -257,6 +283,7 @@ impl NodeRecord {
         self.attempts.push(Attempt {
             base: base.into(),
             checkpoint: None,
+            changed_files: None,
             execution: Execution::Running,
             summary: String::new(),
             scope_violations: Vec::new(),
@@ -353,7 +380,7 @@ impl TaskRecord {
 
 pub fn planning_prompt(goal: &str) -> String {
     format!(
-        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"boundaries\":[\"责任范围、非目标、输入/接口边界条件\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
+        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。这是已获写入授权的编码任务：你当前只读是规划阶段的工具权限，后续独立编码器将实际实施节点。不得把你自己的“仅规划、不写文件、不执行实现”限制写入任务或节点契约；保留用户真实的产品约束。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"boundaries\":[\"责任范围、非目标、输入/接口边界条件\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
         serde_json::to_string(goal).unwrap()
     )
 }
