@@ -134,7 +134,7 @@ fn main() -> Result<()> {
             let mut store = WorkspaceStore::open(repo.root())?;
             let mut app = App::browse(&repo, repo.baseline()?, keymap)?;
             store.restore(&mut app)?;
-            let mut coding = CodingRun::start(
+            let mut coding = CodingRun::start_planning(
                 repo.root(),
                 &pi,
                 model.as_deref(),
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
             if headless {
                 loop {
                     coding.poll(&mut app, &mut store)?;
-                    if coding.is_finished() {
+                    if coding.is_finished() || coding.is_waiting() {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
@@ -328,7 +328,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     .parent()
                     .context("项目目录无效")?
                     .to_owned();
-                match CodingRun::start(
+                match CodingRun::start_planning(
                     &project,
                     Path::new("pi"),
                     None,

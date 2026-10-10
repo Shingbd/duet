@@ -213,6 +213,24 @@ impl PiClient {
         Self::spawn_command(command)
     }
 
+    pub fn spawn_planner(
+        executable: &Path,
+        cwd: &Path,
+        session_dir: &Path,
+        model: Option<&str>,
+    ) -> Result<Self> {
+        let mut command = Command::new(executable);
+        command.current_dir(cwd).args(["--mode","rpc","--offline","--no-approve","--no-extensions",
+            "--no-mcp","--no-skills","--no-prompt-templates","--no-context-files","--no-themes",
+            "--tools","read,grep,find,ls","--append-system-prompt",
+            "You are a read-only task planner. Return the requested strict node plan JSON. Do not implement, write, test, merge or deploy."])
+            .arg("--session-dir").arg(session_dir).env("PI_TELEMETRY","0");
+        if let Some(model) = model {
+            command.args(["--model", model]);
+        }
+        Self::spawn_command(command)
+    }
+
     pub fn spawn_command(mut command: Command) -> Result<Self> {
         let mut child = command
             .stdin(Stdio::piped())

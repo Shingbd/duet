@@ -229,6 +229,38 @@ impl Repository {
     /// Caller must ensure no concurrent writer changes selected files during capture.
     pub fn capture(&self, paths: &[String]) -> Result<Snapshot> {
         ensure!(!paths.is_empty(), "必须明确选择需要快照的文件");
+        self.capture_from(paths, &self.baseline()?)
+    }
+
+    /// Capture the working tree relative to a previous node, including deletion of
+    /// files added by earlier nodes. A separate index keeps user HEAD/index untouched.
+    pub fn capture_worktree_from(&self, base: &Snapshot) -> Result<Snapshot> {
+        let mut paths = self.changed_paths()?;
+        let previous = self.git(
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                "HEAD",
+                &base.commit,
+                "--",
+            ],
+            None,
+        )?;
+        paths.extend(
+            previous
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned),
+        );
+        paths.sort();
+        paths.dedup();
+        self.capture_from(&paths, base)
+    }
+
+    pub fn capture_from(&self, paths: &[String], base: &Snapshot) -> Result<Snapshot> {
+        let parent = self.resolve_snapshot(&base.commit)?.commit;
         for path in paths {
             validate_path(path)?;
             let mut current = self.root.clone();
@@ -253,7 +285,6 @@ impl Repository {
                 ensure!(meta.len() <= MAX_FILE_BYTES, "文件超过 1 MiB：{path}");
             }
         }
-        let parent = self.baseline()?.commit;
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         // Git requires an absent path for a new index; own directory prevents collisions.
         let dir = std::env::temp_dir().join(format!("duet-index-{}-{nonce}", std::process::id()));

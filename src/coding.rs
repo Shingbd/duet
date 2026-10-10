@@ -1,6 +1,8 @@
 use crate::{
     app::{App, RunControl},
     checkpoint::Repository,
+    checkpoint::Snapshot,
+    nodes::{Execution, TaskPlan, TaskRecord, TaskState, planning_prompt},
     rpc::{PiClient, RunStatus, message_text},
     storage::{Message, WorkspaceStore},
 };
@@ -25,8 +27,21 @@ struct PendingControl {
     deadline: Instant,
 }
 
+#[derive(Clone, Copy)]
+enum Phase {
+    Legacy,
+    Planning,
+    Node(usize),
+}
+
 pub struct CodingRun {
     client: PiClient,
+    phase: Phase,
+    executable: PathBuf,
+    model: Option<String>,
+    node_base: Option<Snapshot>,
+    plan_output: String,
+    waiting: bool,
     pub worktree: PathBuf,
     pub branch: String,
     pub session: String,
@@ -54,9 +69,37 @@ impl CodingRun {
         store: &mut WorkspaceStore,
         app: &mut App,
     ) -> Result<Self> {
+        Self::start_internal(
+            project, executable, model, prompt, timeout, store, app, false,
+        )
+    }
+    pub fn start_planning(
+        project: &Path,
+        executable: &Path,
+        model: Option<&str>,
+        prompt: &str,
+        timeout: Duration,
+        store: &mut WorkspaceStore,
+        app: &mut App,
+    ) -> Result<Self> {
+        Self::start_internal(
+            project, executable, model, prompt, timeout, store, app, true,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn start_internal(
+        project: &Path,
+        executable: &Path,
+        model: Option<&str>,
+        prompt: &str,
+        timeout: Duration,
+        store: &mut WorkspaceStore,
+        app: &mut App,
+        planning: bool,
+    ) -> Result<Self> {
         ensure!(!prompt.trim().is_empty(), "任务不能为空");
         let source = Repository::open(project)?;
-        source
+        let baseline = source
             .baseline()
             .context("编码前请先提交项目基线；不会自动提交用户文件")?;
         let id = SystemTime::now()
@@ -81,7 +124,11 @@ impl CodingRun {
                 .is_symlink(),
             "sessions 不允许符号链接"
         );
-        let mut client = PiClient::spawn_coder(executable, &worktree, &sessions, model)?;
+        let mut client = if planning {
+            PiClient::spawn_planner(executable, &worktree, &sessions, model)?
+        } else {
+            PiClient::spawn_coder(executable, &worktree, &sessions, model)?
+        };
         let state = client.get_state(Duration::from_secs(20))?;
         let session = state["sessionId"]
             .as_str()
@@ -92,6 +139,19 @@ impl CodingRun {
             "Pi 没有可用模型，请先运行 pi 配置模型与认证"
         );
         store.begin_run(&id, &session, &worktree, &branch, prompt)?;
+        let mut task = TaskRecord::legacy(&id, prompt, &session);
+        task.baseline = Some(baseline.commit);
+        if planning {
+            task.state = TaskState::Planning;
+        }
+        store.save_task(&task)?;
+        app.tasks.push(task);
+        if app.task_selection.is_none() {
+            app.task_selection = Some(crate::app::TaskSelection {
+                task_id: id.clone(),
+                node_id: None,
+            });
+        }
         app.agent_connected = true;
         app.task = Some(prompt.into());
         app.task_scroll = 0;
@@ -99,8 +159,24 @@ impl CodingRun {
         app.history.clear();
         app.run = Default::default();
         app.run.status = RunStatus::Running;
+        let resolved_model = model.map(str::to_owned).or_else(|| {
+            state["model"]["provider"]
+                .as_str()
+                .zip(state["model"]["id"].as_str())
+                .map(|(p, id)| format!("{p}/{id}"))
+        });
         let mut run = Self {
             client,
+            phase: if planning {
+                Phase::Planning
+            } else {
+                Phase::Legacy
+            },
+            executable: executable.into(),
+            model: resolved_model,
+            node_base: None,
+            plan_output: String::new(),
+            waiting: false,
             worktree,
             branch,
             session,
@@ -118,9 +194,19 @@ impl CodingRun {
             pending_echoes: VecDeque::new(),
         };
         run.record("user", prompt, app, store)?;
-        run.pending_echoes.push_back(prompt.into());
-        run.send_prompt(prompt, app)?;
-        app.status = "编码中 · 当前阅读基线".into();
+        let message = if planning {
+            planning_prompt(prompt)
+        } else {
+            prompt.into()
+        };
+        run.pending_echoes.push_back(message.clone());
+        run.send_prompt(&message, app)?;
+        app.status = if planning {
+            "只读拆分中 · 尚未开始写入"
+        } else {
+            "编码中 · 当前阅读基线"
+        }
+        .into();
         Ok(run)
     }
 
@@ -135,11 +221,15 @@ impl CodingRun {
             return Ok(());
         }
         store.append_message(&self.session, role, content)?;
-        app.history.push(Message {
+        let message = Message {
             session: self.session.clone(),
             role: role.into(),
             content: content.into(),
-        });
+        };
+        app.history.push(message.clone());
+        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == self.id) {
+            task.history.push(message);
+        }
         app.content_revision = app.content_revision.wrapping_add(1);
         Ok(())
     }
@@ -159,6 +249,11 @@ impl CodingRun {
         app: &mut App,
         store: &mut WorkspaceStore,
     ) -> Result<()> {
+        if let RunControl::Say(_) = &control {
+            ensure!(app.task_selection.as_ref().is_none_or(|s| s.task_id == self.id &&
+                s.node_id.as_ref().is_none_or(|id| matches!(self.phase,Phase::Node(i) if app.tasks.iter().find(|t| t.id==self.id).is_some_and(|t| &t.nodes[i].contract.id==id)))),
+                "所选任务/节点不是当前编码会话，未发送消息");
+        }
         match control {
             RunControl::TogglePause if app.run.status == RunStatus::Paused => {
                 self.resume(app, store)
@@ -181,6 +276,13 @@ impl CodingRun {
                     app.queued_corrections = self.corrections.len();
                     app.status = "纠正已记录 · 继续后发送，尚未交给 AI".into();
                 } else {
+                    if self.finished
+                        && let Phase::Node(index) = self.phase
+                    {
+                        self.deadline = Instant::now() + self.timeout;
+                        self.begin_node(index, &message, app, store)?;
+                        return Ok(());
+                    }
                     if self.finished {
                         self.finished = false;
                         self.settled = false;
@@ -227,6 +329,34 @@ impl CodingRun {
     }
 
     pub fn resume(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        if self.waiting {
+            ensure!(app.run.status == RunStatus::Paused, "节点边界尚未暂停");
+            ensure!(!self.remaining.is_zero(), "任务时间预算已耗尽");
+            self.deadline = Instant::now() + self.remaining;
+            self.waiting = false;
+            if !self.corrections.is_empty()
+                && let Phase::Node(index) = self.phase
+            {
+                let correction = self.corrections.join("\n\n");
+                self.corrections.clear();
+                app.queued_corrections = 0;
+                self.begin_node(index, &correction, app, store)?;
+            } else {
+                if app
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == self.id)
+                    .unwrap()
+                    .pending_reviews()
+                    >= 2
+                {
+                    self.waiting = true;
+                    anyhow::bail!("仍有两个待审节点；请先明确批准节点，再继续");
+                }
+                self.start_next(app, store)?;
+            }
+            return Ok(());
+        }
         ensure!(
             !self.closed && app.run.status == RunStatus::Paused,
             "请等待已暂停确认后再继续"
@@ -330,7 +460,14 @@ impl CodingRun {
     }
 
     pub fn poll(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<bool> {
-        if self.finished {
+        if self.waiting && app.run.status == RunStatus::Aborted {
+            self.waiting = false;
+            self.finished = true;
+            store.finish_run(&self.id, "Aborted", self.checkpoint.as_deref())?;
+            self.sync_state(app, store)?;
+            return Ok(true);
+        }
+        if self.finished || self.waiting {
             return Ok(false);
         }
         let mut changed = false;
@@ -355,12 +492,21 @@ impl CodingRun {
                                     })
                                     .is_some();
                             if !echoed {
-                                self.record(role, &content, app, store)?;
+                                if matches!(self.phase, Phase::Planning) && role == "assistant" {
+                                    if !content.trim().is_empty() {
+                                        self.plan_output = content;
+                                    }
+                                } else {
+                                    self.record(role, &content, app, store)?;
+                                }
                             }
                         }
                     }
                     let was_paused = app.run.status == RunStatus::Paused;
                     app.run.apply(&record);
+                    if matches!(self.phase, Phase::Planning) {
+                        app.run.streaming_text = false;
+                    }
                     if record["type"] == "agent_start" {
                         self.settled = false;
                     }
@@ -424,12 +570,18 @@ impl CodingRun {
             changed = true;
         }
         if changed {
+            self.sync_state(app, store)?;
             app.content_revision = app.content_revision.wrapping_add(1);
         }
         Ok(changed)
     }
 
     fn finish_turn(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        match self.phase {
+            Phase::Planning => return self.finish_planning(app, store),
+            Phase::Node(index) => return self.finish_node(index, app, store),
+            Phase::Legacy => {}
+        }
         // Natural agent_settled guarantees no queued/automatic work; the host serializes
         // capture and new prompts. Keep the idle session for explicit human follow-ups.
         // Failure/cancellation closes Pi before capture instead.
@@ -466,11 +618,250 @@ impl CodingRun {
         Ok(())
     }
 
+    fn sync_state(&self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == self.id) {
+            task.state =
+                if matches!(self.phase, Phase::Planning) && app.run.status == RunStatus::Running {
+                    TaskState::Planning
+                } else {
+                    TaskState::from_run(&format!("{:?}", app.run.status))
+                };
+            task.checkpoint = self.checkpoint.clone();
+            if let Phase::Node(index) = self.phase {
+                let node = &mut task.nodes[index];
+                if matches!(node.execution, Execution::Running | Execution::Paused) {
+                    node.execution = if app.run.status == RunStatus::Paused {
+                        Execution::Paused
+                    } else {
+                        Execution::Running
+                    };
+                    if let Some(attempt) = node.attempts.last_mut() {
+                        attempt.execution = node.execution;
+                    }
+                }
+            }
+            store.save_task(task)?;
+        }
+        Ok(())
+    }
+
+    fn fail_workflow(
+        &mut self,
+        error: impl std::fmt::Display,
+        app: &mut App,
+        store: &mut WorkspaceStore,
+    ) -> Result<()> {
+        self.client.shutdown()?;
+        self.closed = true;
+        self.finished = true;
+        app.agent_connected = false;
+        app.run.status = RunStatus::Failed;
+        app.run.error = Some(error.to_string());
+        app.status = format!("节点流程停止：{error}");
+        store.finish_run(&self.id, "Failed", self.checkpoint.as_deref())?;
+        self.sync_state(app, store)
+    }
+    fn finish_planning(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        if app.run.status != RunStatus::Settled {
+            self.client.shutdown()?;
+            self.closed = true;
+            self.finished = true;
+            app.agent_connected = false;
+            app.status = "拆分已停止 · 未进入节点实现".into();
+            store.finish_run(&self.id, &format!("{:?}", app.run.status), None)?;
+            return Ok(());
+        }
+        let result = (|| -> Result<()> {
+            let plan = TaskPlan::parse(&self.plan_output)?;
+            self.client.shutdown()?;
+            self.closed = true;
+            app.agent_connected = false;
+            let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+            task.install_plan(plan)?;
+            store.save_task(task)?;
+            self.client = PiClient::spawn_coder(
+                &self.executable,
+                &self.worktree,
+                &store.directory().join("sessions"),
+                self.model.as_deref(),
+            )?;
+            let state = self.client.get_state(Duration::from_secs(20))?;
+            ensure!(state["model"].is_object(), "节点编码模型不可用");
+            self.session = state["sessionId"]
+                .as_str()
+                .context("节点编码会话 ID 缺失")?
+                .into();
+            store.set_session(&self.id, &self.session)?;
+            let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+            if !task.sessions.contains(&self.session) {
+                task.sessions.push(self.session.clone());
+            }
+            store.save_task(task)?;
+            self.closed = false;
+            app.agent_connected = true;
+            self.start_next(app, store)
+        })();
+        if let Err(error) = result {
+            self.fail_workflow(error, app, store)?;
+        }
+        Ok(())
+    }
+    fn begin_node(
+        &mut self,
+        index: usize,
+        extra: &str,
+        app: &mut App,
+        store: &mut WorkspaceStore,
+    ) -> Result<()> {
+        ensure!(
+            Instant::now() < self.deadline,
+            "任务时间预算已耗尽，后续节点未启动"
+        );
+        let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+        let base = self.repo.resolve_snapshot(
+            task.checkpoint
+                .as_deref()
+                .or(task.baseline.as_deref())
+                .context("节点执行基线缺失")?,
+        )?;
+        let node = &mut task.nodes[index];
+        let message = format!(
+            "仅执行当前节点，不要开始其他节点。不要运行测试、合并或部署。原始需求：{}\n任务总体契约：{}\n当前节点契约：{}\n明确补充意见：{}\n只可在节点 scope 内实现，越界需要停止并说明。完成后总结实现及未验证验收条件，不得宣称用户已批准。",
+            serde_json::to_string(&task.prompt)?,
+            serde_json::to_string(&task.plan)?,
+            serde_json::to_string(&node.contract)?,
+            serde_json::to_string(extra)?
+        );
+        node.begin(&base.commit);
+        task.state = TaskState::Running;
+        store.save_task(task)?;
+        self.node_base = Some(base);
+        self.phase = Phase::Node(index);
+        self.finished = false;
+        self.waiting = false;
+        self.settled = false;
+        app.run = Default::default();
+        app.run.status = RunStatus::Running;
+        self.pending_echoes.push_back(message.clone());
+        self.send_prompt(&message, app)?;
+        store.finish_run(&self.id, "Running", self.checkpoint.as_deref())?;
+        app.status = format!(
+            "节点 {} 执行中 · 验收未验证",
+            app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
+                .contract
+                .title
+        );
+        Ok(())
+    }
+    fn start_next(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        let task = app.tasks.iter().find(|t| t.id == self.id).unwrap();
+        let Some(index) = task.next_ready() else {
+            ensure!(
+                task.nodes
+                    .iter()
+                    .all(|n| n.execution == Execution::Implemented),
+                "依赖未完成，无法继续节点调度"
+            );
+            self.finished = true;
+            app.run.status = RunStatus::Settled;
+            app.status = "所有节点实现结束 · 待审，验收未验证".into();
+            store.finish_run(&self.id, "Settled", self.checkpoint.as_deref())?;
+            return self.sync_state(app, store);
+        };
+        if task.pending_reviews() >= 2 {
+            self.remaining = self.deadline.saturating_duration_since(Instant::now());
+            self.waiting = true;
+            app.run.status = RunStatus::Paused;
+            app.status = "节点边界已暂停 · 已有两个待审节点；明确批准后 p 继续".into();
+            store.finish_run(&self.id, "Paused", self.checkpoint.as_deref())?;
+            return self.sync_state(app, store);
+        }
+        self.begin_node(index, "", app, store)
+    }
+    fn finish_node(
+        &mut self,
+        index: usize,
+        app: &mut App,
+        store: &mut WorkspaceStore,
+    ) -> Result<()> {
+        let status = app.run.status.clone();
+        if status != RunStatus::Settled {
+            self.client.shutdown()?;
+            self.closed = true;
+            app.agent_connected = false;
+        }
+        let captured = self
+            .repo
+            .capture_worktree_from(self.node_base.as_ref().context("节点开始版本缺失")?);
+        let result = (|| -> Result<()> {
+            let snapshot = captured?;
+            let changes = self.repo.snapshot_changes(&snapshot)?;
+            let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+            let node = &mut task.nodes[index];
+            let violations: Vec<_> = changes
+                .iter()
+                .filter(|c| !node.contract.contains_path(&c.path))
+                .map(|c| c.path.clone())
+                .collect();
+            node.execution = match status {
+                RunStatus::Settled if violations.is_empty() => Execution::Implemented,
+                RunStatus::Aborted => Execution::Cancelled,
+                _ => Execution::Failed,
+            };
+            let attempt = node.attempts.last_mut().context("节点执行记录缺失")?;
+            attempt.execution = node.execution;
+            attempt.checkpoint = Some(snapshot.commit.clone());
+            attempt.summary = app.run.text.clone();
+            attempt.scope_violations = violations.clone();
+            task.checkpoint = Some(snapshot.commit.clone());
+            self.checkpoint = Some(snapshot.commit.clone());
+            store.save_task(task)?;
+            app.append_node_checkpoint(&self.repo, &snapshot, &self.id, index)?;
+            if !violations.is_empty() {
+                anyhow::bail!(
+                    "节点发生仓内范围越界：{}；后续节点未启动",
+                    violations.join("、")
+                );
+            }
+            if status != RunStatus::Settled {
+                self.finished = true;
+                app.status = "节点已停止 · 已有改动留在固定检查点，未验收".into();
+                store.finish_run(&self.id, &format!("{status:?}"), self.checkpoint.as_deref())?;
+                return Ok(());
+            }
+            self.start_next(app, store)
+        })();
+        if let Err(error) = result {
+            let node = &mut app
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == self.id)
+                .unwrap()
+                .nodes[index];
+            node.execution = Execution::Failed;
+            if let Some(attempt) = node.attempts.last_mut() {
+                attempt.execution = Execution::Failed;
+            }
+            self.fail_workflow(error, app, store)?;
+        }
+        Ok(())
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        self.waiting
+    }
     pub fn is_finished(&self) -> bool {
         self.finished
     }
 
     pub fn cancel(&mut self, app: &mut App) -> Result<()> {
+        if self.waiting {
+            self.client.shutdown()?;
+            self.closed = true;
+            app.agent_connected = false;
+            app.run.status = RunStatus::Aborted;
+            return Ok(());
+        }
         if !self.finished && !self.closed {
             self.begin_control(false, app)?;
         }
@@ -489,6 +880,12 @@ impl CodingRun {
         }
         self.closed = true;
         app.agent_connected = false;
+        if let Some(task) = app.tasks.iter_mut().find(|t| t.id == self.id) {
+            if app.run.status == RunStatus::Aborted && task.state != TaskState::Cancelled {
+                task.interrupt();
+            }
+            store.save_task(task)?;
+        }
         Ok(())
     }
 }

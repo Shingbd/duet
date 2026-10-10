@@ -1,4 +1,7 @@
-use crate::app::{App, Page, Panel, View};
+use crate::{
+    app::{App, Page, Panel, View},
+    nodes::{TaskRecord, TaskState},
+};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,7 @@ pub struct WorkspaceStore {
     directory: PathBuf,
     _lock: fs::File,
     last_ui: Option<String>,
+    last_tasks: HashMap<String, String>,
     last_progress: HashMap<(String, String), (bool, u16, u16)>,
 }
 
@@ -36,6 +40,8 @@ struct SavedUi {
     notes: Vec<String>,
     #[serde(default)]
     task_scroll: u16,
+    #[serde(default)]
+    task_selection: Option<crate::app::TaskSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +108,7 @@ impl WorkspaceStore {
             fs::set_permissions(&database, fs::Permissions::from_mode(0o600))?;
         }
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        ensure!(version <= 2, "项目数据版本 {version} 高于当前程序支持版本");
+        ensure!(version <= 3, "项目数据版本 {version} 高于当前程序支持版本");
         if version == 0 {
             let tx = connection.transaction()?;
             tx.execute_batch(
@@ -135,18 +141,54 @@ impl WorkspaceStore {
             )?;
             tx.commit()?;
         }
+        if version < 3 {
+            let tx = connection.transaction()?;
+            tx.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE nodes (task_id TEXT NOT NULL REFERENCES tasks(id), node_id TEXT NOT NULL,
+                    position INTEGER NOT NULL, record TEXT NOT NULL, PRIMARY KEY(task_id,node_id));
+                PRAGMA user_version=3;")?;
+            tx.commit()?;
+        }
+        connection.pragma_update(None, "foreign_keys", true)?;
         // Exclusive project lock ensures these cannot belong to another live instance.
         connection.execute(
             "UPDATE runs SET status='Interrupted' WHERE status IN ('Running','Pausing','Paused','Cancelling')",
             [],
         )?;
-        Ok(Self {
+        let mut store = Self {
             connection,
             directory,
             _lock: lock,
             last_ui: None,
+            last_tasks: HashMap::new(),
             last_progress: HashMap::new(),
-        })
+        };
+        // Import real legacy runs, never manufacture structured contracts for them.
+        let legacy = {
+            let mut query = store.connection.prepare("SELECT r.id,r.prompt,r.session,r.status,r.checkpoint FROM runs r LEFT JOIN tasks t ON r.id=t.id WHERE t.id IS NULL ORDER BY r.created_at,r.id")?;
+            query
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, prompt, session, status, checkpoint) in legacy {
+            let mut task = TaskRecord::legacy(&id, &prompt, &session);
+            task.state = TaskState::from_run(&status);
+            task.checkpoint = checkpoint;
+            store.save_task(&task)?;
+        }
+        for mut task in store.tasks()? {
+            task.interrupt();
+            store.save_task(&task)?;
+        }
+        Ok(store)
     }
 
     pub fn directory(&self) -> &Path {
@@ -166,6 +208,7 @@ impl WorkspaceStore {
             VALUES(?1,?2,?3,?4,?5,'Running')",
             params![id, session, worktree.to_string_lossy(), branch, prompt],
         )?;
+        self.save_task(&TaskRecord::legacy(id, prompt, session))?;
         Ok(())
     }
 
@@ -174,10 +217,72 @@ impl WorkspaceStore {
             "UPDATE runs SET status=?2,checkpoint=?3 WHERE id=?1",
             params![id, status, checkpoint],
         )?;
+        if let Some(mut task) = self.tasks()?.into_iter().find(|t| t.id == id) {
+            task.state = TaskState::from_run(status);
+            task.checkpoint = checkpoint.map(str::to_owned);
+            self.save_task(&task)?;
+        }
         Ok(())
     }
 
+    pub fn set_session(&mut self, id: &str, session: &str) -> Result<()> {
+        ensure!(
+            self.connection.execute(
+                "UPDATE runs SET session=?2 WHERE id=?1",
+                params![id, session]
+            )? == 1,
+            "任务记录不存在"
+        );
+        Ok(())
+    }
+    pub fn save_task(&mut self, task: &TaskRecord) -> Result<()> {
+        let encoded = serde_json::to_string(task)?;
+        if self.last_tasks.get(&task.id) == Some(&encoded) {
+            return Ok(());
+        }
+        let mut header = serde_json::to_value(task)?;
+        header.as_object_mut().unwrap().remove("nodes");
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "INSERT INTO tasks VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            params![task.id, header.to_string()],
+        )?;
+        for (position, node) in task.nodes.iter().enumerate() {
+            tx.execute("INSERT INTO nodes VALUES(?1,?2,?3,?4) ON CONFLICT(task_id,node_id) DO UPDATE SET position=excluded.position,record=excluded.record",
+                params![task.id,node.contract.id,position,serde_json::to_string(node)?])?;
+        }
+        tx.commit()?;
+        self.last_tasks.insert(task.id.clone(), encoded);
+        Ok(())
+    }
+    pub fn tasks(&self) -> Result<Vec<TaskRecord>> {
+        let mut query = self
+            .connection
+            .prepare("SELECT record FROM tasks ORDER BY rowid")?;
+        let headers = query
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut tasks = Vec::new();
+        for header in headers {
+            let mut task: TaskRecord =
+                serde_json::from_str(&header).context("任务记录损坏，未覆盖原数据")?;
+            let mut query = self
+                .connection
+                .prepare("SELECT record FROM nodes WHERE task_id=?1 ORDER BY position")?;
+            for node in query.query_map([&task.id], |row| row.get::<_, String>(0))? {
+                task.nodes
+                    .push(serde_json::from_str(&node?).context("节点记录损坏，未覆盖原数据")?);
+            }
+            for session in &task.sessions {
+                task.history.extend(self.history(session)?);
+            }
+            tasks.push(task);
+        }
+        Ok(tasks)
+    }
+
     pub fn restore(&self, app: &mut App) -> Result<()> {
+        app.tasks = self.tasks()?;
         let saved: Option<String> = self
             .connection
             .query_row(
@@ -196,20 +301,32 @@ impl WorkspaceStore {
             app.page = saved.page;
             app.notes = saved.notes;
             app.task_scroll = saved.task_scroll;
+            app.task_selection = saved.task_selection;
             saved_selection = saved.selected;
         }
-        let latest: Option<(String, String, String, Option<String>)> = self
+        let latest: Option<(String, String, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT prompt,session,status,checkpoint FROM runs ORDER BY created_at DESC,id DESC LIMIT 1",
+                "SELECT id,prompt,session,status,checkpoint FROM runs ORDER BY created_at DESC,id DESC LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,row.get(4)?)),
             )
             .optional()?;
-        if let Some((prompt, session, status, checkpoint)) = latest {
+        let mut latest_checkpoint = None;
+        if let Some((id, prompt, session, status, checkpoint)) = latest {
+            if app.task_selection.is_none() {
+                app.task_selection = Some(crate::app::TaskSelection {
+                    task_id: id.clone(),
+                    node_id: None,
+                });
+            }
             app.task = Some(prompt);
-            app.history = self
-                .history(&session)?
+            app.history = app
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.history.clone())
+                .unwrap_or(self.history(&session)?)
                 .into_iter()
                 .filter(|message| !message.content.trim().is_empty())
                 .collect();
@@ -222,18 +339,44 @@ impl WorkspaceStore {
                 "Aborted" | "Interrupted" => crate::rpc::RunStatus::Aborted,
                 _ => crate::rpc::RunStatus::Idle,
             };
-            if let Some(checkpoint) = checkpoint {
+            latest_checkpoint = checkpoint;
+        }
+        // Restore all real task/node attempts so history navigation never reads mutable files.
+        for task in app.tasks.clone() {
+            let snapshots: Vec<_> = if task.nodes.is_empty() {
+                task.checkpoint
+                    .iter()
+                    .map(|cp| (cp.clone(), None))
+                    .collect()
+            } else {
+                task.nodes
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(index, n)| {
+                        n.attempts.iter().filter_map(move |a| {
+                            a.checkpoint.as_ref().map(|cp| (cp.clone(), Some(index)))
+                        })
+                    })
+                    .collect()
+            };
+            for (checkpoint, index) in snapshots {
                 let restored = (|| -> Result<()> {
-                    let project = self.directory.parent().context("项目目录无效")?;
-                    let repo = crate::checkpoint::Repository::open(project)?;
+                    let repo = crate::checkpoint::Repository::open(
+                        self.directory.parent().context("项目目录无效")?,
+                    )?;
                     let snapshot = repo.resolve_snapshot(&checkpoint)?;
-                    app.append_checkpoint(&repo, &snapshot)
+                    if let Some(index) = index {
+                        app.append_node_checkpoint(&repo, &snapshot, &task.id, index)
+                    } else {
+                        app.append_checkpoint(&repo, &snapshot)
+                    }
                 })();
                 if let Err(error) = restored {
                     app.status = format!("对话已恢复，但审核快照无法恢复：{error}");
                 }
             }
         }
+        app.latest_checkpoint = latest_checkpoint;
         // Delivery items must exist before restoring their selection/reading positions.
         if let Some((version, title)) = saved_selection {
             let selected = app.items.iter().position(|item| {
@@ -288,6 +431,9 @@ impl WorkspaceStore {
     }
 
     pub fn save(&mut self, app: &App) -> Result<()> {
+        for task in &app.tasks {
+            self.save_task(task)?;
+        }
         let saved = SavedUi {
             light: app.light,
             view: app.view,
@@ -298,6 +444,7 @@ impl WorkspaceStore {
                 .map(|item| (item.version.clone(), item.title.clone())),
             notes: app.notes.clone(),
             task_scroll: app.task_scroll,
+            task_selection: app.task_selection.clone(),
         };
         let encoded = serde_json::to_string(&saved)?;
         let changed_ui = self.last_ui.as_ref() != Some(&encoded);

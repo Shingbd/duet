@@ -1,0 +1,230 @@
+#![cfg(unix)]
+use duet_workbench::{
+    app::{App, RunControl},
+    checkpoint::Repository,
+    coding::CodingRun,
+    keymap::Keymap,
+    nodes::{Execution, Review, Verification},
+    storage::WorkspaceStore,
+};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    process::Command,
+    time::{Duration, Instant},
+};
+fn setup(count: usize, mode: &str) -> (tempfile::TempDir, std::path::PathBuf, WorkspaceStore, App) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("base.txt"), "baseline\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let fake = dir.path().join(".duet-fake-pi");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+import json,os,pathlib,sys
+count={count}
+mode={mode:?}
+planner=sys.argv[sys.argv.index('--tools')+1]=='read,grep,find,ls'
+def emit(r): print(json.dumps(r),flush=True)
+for line in sys.stdin:
+ r=json.loads(line); response={{'type':'response','id':r['id'],'success':True}}
+ if r['type']=='get_state':
+  response['data']={{'sessionId':'session-'+str(os.getpid()),'model':{{'id':'fake'}},'isStreaming':False,'isCompacting':False,'pendingMessageCount':0}}; emit(response)
+ elif r['type']=='prompt':
+  response['data']={{'disposition':'started'}}; emit(response); emit({{'type':'agent_start'}})
+  if planner:
+   nodes=[{{'id':'n'+str(i),'title':'node '+str(i),'objective':'implement '+str(i),'scope':['file'+str(i)+'.txt'],'implementation':'write the requested file','constraints':['no tests or merge'],'dependencies':[] if i==1 else ['n'+str(i-1)],'acceptance':['file content is correct']}} for i in range(1,count+1)]
+   output=json.dumps({{'schema_version':1,'objective':'goal','constraints':['keep baseline'],'acceptance':['all files correct'],'nodes':nodes}}) if mode!='invalid' else 'not json'
+  else:
+   node=json.loads(r['message'].split('\n当前节点契约：')[1].split('\n明确补充意见：')[0])
+   pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
+   if mode=='violate': pathlib.Path('outside.txt').write_text('outside')
+   output='implemented '+node['id']+'; tests not run'
+  emit({{'type':'message_end','message':{{'role':'assistant','content':[{{'type':'text','text':output}}]}}}})
+  emit({{'type':'agent_settled','aborted':False}})
+ else: emit(response)
+"#
+    );
+    fs::write(&fake, script).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    // The fake executable is test infrastructure, not an authorized source change.
+    fs::write(dir.path().join(".git/info/exclude"), ".duet-fake-pi\n").unwrap();
+    let repo = Repository::open(dir.path()).unwrap();
+    let app = App::browse(&repo, repo.baseline().unwrap(), Keymap::default()).unwrap();
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    (dir, fake, store, app)
+}
+fn poll(run: &mut CodingRun, app: &mut App, store: &mut WorkspaceStore) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !run.is_finished() && !run.is_waiting() {
+        assert!(
+            Instant::now() < deadline,
+            "{} {:?}",
+            app.status,
+            app.run.status
+        );
+        run.poll(app, store).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+#[test]
+fn readonly_planning_runs_nodes_with_separate_immutable_diffs_and_restores_history() {
+    let (dir, fake, mut store, mut app) = setup(2, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "whole requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(run.is_finished(), "{}", app.status);
+    let task = app.tasks.last().unwrap();
+    assert_eq!(task.nodes.len(), 2);
+    for node in &task.nodes {
+        assert_eq!(node.execution, Execution::Implemented);
+        assert_eq!(node.verification, Verification::Unverified);
+        assert_eq!(node.review, Review::Pending);
+    }
+    let repo = Repository::open(&run.worktree).unwrap();
+    let first = repo
+        .resolve_snapshot(task.nodes[0].checkpoint().unwrap())
+        .unwrap();
+    let second = repo
+        .resolve_snapshot(task.nodes[1].checkpoint().unwrap())
+        .unwrap();
+    assert_eq!(second.parent.as_deref(), Some(first.commit.as_str()));
+    assert_eq!(repo.snapshot_changes(&first).unwrap()[0].path, "file1.txt");
+    let changes = repo.snapshot_changes(&second).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "file2.txt");
+    assert!(repo.read(&second, "file1.txt").unwrap().contains("n1"));
+    assert!(!dir.path().join("file1.txt").exists());
+    let id = task.id.clone();
+    run.stop(&mut app, &mut store).unwrap();
+    store.save(&app).unwrap();
+    drop(run);
+    drop(store);
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    let mut restored = App::empty(Keymap::default());
+    store.restore(&mut restored).unwrap();
+    assert_eq!(restored.tasks[0].id, id);
+    assert_eq!(restored.tasks[0].nodes.len(), 2);
+    assert_eq!(restored.history[0].content, "whole requirement");
+    assert!(
+        restored
+            .items
+            .iter()
+            .any(|i| i.version == first.commit && i.title == "file1.txt")
+    );
+    assert!(
+        restored
+            .items
+            .iter()
+            .any(|i| i.version == second.commit && i.title == "file2.txt")
+    );
+}
+#[test]
+fn real_node_backpressure_requires_explicit_approval_and_resume() {
+    let (dir, fake, mut store, mut app) = setup(3, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "three nodes",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(run.is_waiting());
+    assert_eq!(app.tasks[0].nodes[2].execution, Execution::Planned);
+    assert!(!run.worktree.join("file3.txt").exists());
+    assert!(run.resume(&mut app, &mut store).is_err());
+    let node = &mut app.tasks[0].nodes[0];
+    let checkpoint = node.checkpoint().unwrap().to_owned();
+    node.approve(&checkpoint).unwrap();
+    assert!(!run.worktree.join("file3.txt").exists());
+    run.resume(&mut app, &mut store).unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(run.is_finished());
+    assert_eq!(app.tasks[0].nodes[2].execution, Execution::Implemented);
+}
+#[test]
+fn invalid_plan_and_scope_violations_stop_without_starting_later_nodes() {
+    for mode in ["invalid", "violate"] {
+        let (dir, fake, mut store, mut app) = setup(2, mode);
+        let mut run = CodingRun::start_planning(
+            dir.path(),
+            &fake,
+            None,
+            "requirement",
+            Duration::from_secs(15),
+            &mut store,
+            &mut app,
+        )
+        .unwrap();
+        poll(&mut run, &mut app, &mut store);
+        assert!(run.is_finished());
+        assert_eq!(app.run.status, duet_workbench::rpc::RunStatus::Failed);
+        assert!(!run.worktree.join("file2.txt").exists());
+        if mode == "invalid" {
+            assert!(!run.worktree.join("file1.txt").exists());
+        } else {
+            assert_eq!(
+                app.tasks[0].nodes[0].attempts[0].scope_violations,
+                vec!["outside.txt"]
+            );
+        }
+    }
+}
+#[test]
+fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
+    let (dir, fake, mut store, mut app) = setup(3, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "three nodes",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    run.cancel(&mut app).unwrap();
+    run.poll(&mut app, &mut store).unwrap();
+    assert!(run.is_finished());
+    assert_eq!(app.tasks[0].state, TaskState::Cancelled);
+    assert!(!run.worktree.join("file3.txt").exists());
+    assert!(
+        run.interact(RunControl::Resume, &mut app, &mut store)
+            .is_err()
+    );
+}
+use duet_workbench::nodes::TaskState;

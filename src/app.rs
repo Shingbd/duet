@@ -1,6 +1,7 @@
 use crate::{
     checkpoint::{ChangeKind, Repository, Snapshot},
     keymap::{Action, Keymap},
+    nodes::TaskRecord,
     rpc::{RunState, RunStatus},
     storage::Message,
 };
@@ -60,6 +61,12 @@ pub struct ReadingItem {
     pub evidence_scroll: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSelection {
+    pub task_id: String,
+    pub node_id: Option<String>,
+}
+
 pub struct App {
     pub name: String,
     pub content_revision: u64,
@@ -84,6 +91,8 @@ pub struct App {
     pub queued_corrections: usize,
     pub controls: Vec<RunControl>,
     pub task: Option<String>,
+    pub tasks: Vec<TaskRecord>,
+    pub task_selection: Option<TaskSelection>,
     pub requested_task: Option<String>,
     pub keymap: Keymap,
     pub quit: bool,
@@ -116,6 +125,8 @@ impl App {
             queued_corrections: 0,
             controls: Vec::new(),
             task: None,
+            tasks: Vec::new(),
+            task_selection: None,
             requested_task: None,
             keymap,
             quit: false,
@@ -209,6 +220,51 @@ impl App {
         }
         self.latest_checkpoint = Some(snapshot.commit.clone());
         self.content_revision = self.content_revision.wrapping_add(1);
+        Ok(())
+    }
+
+    pub fn append_node_checkpoint(
+        &mut self,
+        repo: &Repository,
+        snapshot: &Snapshot,
+        task_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        self.append_checkpoint(repo, snapshot)?;
+        let task = self.tasks.iter().find(|t| t.id == task_id).unwrap();
+        let node = &task.nodes[index];
+        let attempt = node
+            .attempts
+            .iter()
+            .find(|a| a.checkpoint.as_deref() == Some(&snapshot.commit));
+        let intent = format!(
+            "任务：{}\n节点：{}\n目标：{}\n范围：{}\n实现方法：{}\n约束：{}\n依赖：{}\n验收条件（未验证）：\n{}",
+            task.prompt,
+            node.contract.title,
+            node.contract.objective,
+            node.contract.scope.join("、"),
+            node.contract.implementation,
+            node.contract.constraints.join("；"),
+            node.contract.dependencies.join("、"),
+            node.contract.acceptance.join("\n")
+        );
+        for item in self
+            .items
+            .iter_mut()
+            .filter(|i| i.version == snapshot.commit)
+        {
+            item.intent = intent.clone();
+            item.explanation = attempt.map(|a| a.summary.clone()).unwrap_or_default();
+            item.evidence = format!(
+                "验收：{:?} · 人工审核：{:?}\n测试 Runner 未接入{}",
+                node.verification,
+                node.review,
+                attempt
+                    .filter(|a| !a.scope_violations.is_empty())
+                    .map(|a| format!("\n仓内越界变更：{}", a.scope_violations.join("、")))
+                    .unwrap_or_default()
+            );
+        }
         Ok(())
     }
 
