@@ -82,7 +82,7 @@ for line in sys.stdin:
         assert records()[0][0]['review']=='Pending','command must require confirmation'
         send(b'\x1b')
         assert records()[0][0]['review']=='Pending'
-        send(b':approve-node\r')
+        send(b'a')
         send(b'\r')
         wait(lambda: records()[0][0]['review']=='Approved')
         assert records()[0][2]['execution']=='Planned','approval must not implicitly resume'

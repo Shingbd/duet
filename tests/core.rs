@@ -9,6 +9,50 @@ use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use std::{collections::BTreeMap, io::Cursor};
 
+#[test]
+fn approval_shortcut_is_configurable_contextual_and_never_fires_in_input_modes() {
+    let event = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    assert_eq!(
+        Keymap::default().resolve(event(KeyCode::Char('a'))),
+        Some(Action::ApproveNode)
+    );
+    let custom = Keymap::from_overrides(BTreeMap::from([(
+        "approve_node".into(),
+        vec!["ctrl+a".into()],
+    )]))
+    .unwrap();
+    assert_eq!(custom.resolve(event(KeyCode::Char('a'))), None);
+    assert_eq!(
+        custom.resolve(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        Some(Action::ApproveNode)
+    );
+    assert!(
+        Keymap::from_overrides(BTreeMap::from([("approve_node".into(), vec!["q".into()])]))
+            .is_err()
+    );
+    let mut app = App::empty(Keymap::default());
+    app.act(Action::Tasks);
+    app.handle_key(event(KeyCode::Char('a')));
+    assert_eq!(app.mode, Mode::Browse);
+    assert!(app.status.contains("审核"));
+    for mode in [
+        Mode::Input {
+            search: false,
+            text: String::new(),
+        },
+        Mode::Message {
+            text: String::new(),
+        },
+    ] {
+        app.mode = mode;
+        app.handle_key(event(KeyCode::Char('a')));
+        match &app.mode {
+            Mode::Input { text, .. } | Mode::Message { text } => assert_eq!(text, "a"),
+            _ => panic!("typing a must not approve"),
+        }
+    }
+}
+
 fn item() -> ReadingItem {
     ReadingItem {
         title: "test.rs".into(),

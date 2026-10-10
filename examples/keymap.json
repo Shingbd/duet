@@ -3,5 +3,6 @@
   "theme": ["t"],
   "help": ["?"],
   "pause": ["p"],
-  "reply": ["i"]
+  "reply": ["i"],
+  "approve_node": ["a"]
 }

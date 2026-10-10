@@ -344,7 +344,9 @@ fn explicit_node_approval_is_confirmed_persisted_and_does_not_verify_or_merge() 
     assert!(matches!(app.mode, Mode::ConfirmNodeApproval { .. }));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.selected_node().unwrap().review, Review::Pending);
-    command(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::ConfirmNodeApproval { .. }));
+    assert_eq!(app.selected_node().unwrap().review, Review::Pending);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.selected_node().unwrap().review, Review::Approved);
     assert_eq!(

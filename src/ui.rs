@@ -200,7 +200,12 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             )),
             Line::from(Span::styled(
                 format!(
-                    " {} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
+                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
+                    if app.view == View::Review {
+                        format!("{} 批准节点 · ", app.keymap.hint(Action::ApproveNode))
+                    } else {
+                        String::new()
+                    },
                     app.keymap.hint(Action::NextPanel),
                     app.keymap.hint(Action::Explain),
                     app.keymap.hint(Action::Fullscreen),
@@ -285,17 +290,22 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             64,
             7,
         ),
-        Mode::ConfirmNodeApproval { checkpoint, .. } => popup(
+        Mode::ConfirmNodeApproval {
+            checkpoint,
+            node_id,
+            ..
+        } => popup(
             frame,
             theme,
             " 明确批准节点版本 ",
             vec![
+                Line::from(format!("节点：{}", safe_text(node_id))),
                 Line::from("验收仍未验证。此操作不会运行测试或合并代码。"),
                 Line::from(safe_text(checkpoint)),
                 Line::from("Enter 批准该版本 · Esc 返回"),
             ],
             76,
-            7,
+            8,
         ),
         Mode::Browse => {}
     }

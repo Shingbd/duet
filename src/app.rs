@@ -872,6 +872,8 @@ impl App {
                 }
             }
             Action::Theme => self.light = !self.light,
+            Action::ApproveNode if self.view == View::Review => self.request_node_approval(),
+            Action::ApproveNode => self.status = "请按 2 进入审核，再批准当前节点版本".into(),
             Action::MarkRead if self.view == View::Tasks => {
                 self.status = "请在审核视图标记文件已读；节点批准使用 :approve-node".into()
             }
