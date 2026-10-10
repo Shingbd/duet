@@ -17,6 +17,8 @@ fn fixture() -> App {
             .map(|n| format!("let value_{n} = process({n});\n"))
             .collect(),
         intent: String::new(),
+        diff: String::new(),
+        change: None,
         evidence: String::new(),
         explanation: String::new(),
         read: false,

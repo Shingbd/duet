@@ -235,19 +235,49 @@ impl WorkspaceStore {
             }
         }
         // Delivery items must exist before restoring their selection/reading positions.
-        if let Some((version, title)) = saved_selection
-            && let Some(index) = app
-                .items
-                .iter()
-                .position(|item| item.version == version && item.title == title)
-        {
-            app.selected = index;
+        if let Some((version, title)) = saved_selection {
+            let selected = app.items.iter().position(|item| {
+                item.version == version
+                    && (item.title == title
+                        || title
+                            == format!(
+                                "待审 · {}{}",
+                                item.title,
+                                if item.change == Some(crate::checkpoint::ChangeKind::Deleted) {
+                                    "（已删除）"
+                                } else {
+                                    ""
+                                }
+                            ))
+            });
+            if let Some(index) = selected {
+                app.selected = index;
+            } else if title == "变更"
+                && app.latest_checkpoint.as_deref() == Some(&version)
+                && let Some(index) = app.changed_indices().first()
+            {
+                app.selected = *index;
+            }
         }
         for item in &mut app.items {
-            let state: Option<(bool, u16, u16)> = self.connection.query_row(
+            let mut state: Option<(bool, u16, u16)> = self.connection.query_row(
                 "SELECT is_read, scroll, evidence_scroll FROM reading_progress WHERE version=?1 AND path=?2",
                 params![item.version, item.title], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             ).optional()?;
+            if state.is_none() && item.change.is_some() {
+                let legacy = format!(
+                    "待审 · {}{}",
+                    item.title,
+                    if item.change == Some(crate::checkpoint::ChangeKind::Deleted) {
+                        "（已删除）"
+                    } else {
+                        ""
+                    }
+                );
+                state = self.connection.query_row(
+                    "SELECT is_read,scroll,evidence_scroll FROM reading_progress WHERE version=?1 AND path=?2",
+                    params![item.version,legacy], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            }
             if let Some((read, scroll, evidence_scroll)) = state {
                 item.read = read;
                 item.scroll = scroll;

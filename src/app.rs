@@ -1,5 +1,5 @@
 use crate::{
-    checkpoint::{Repository, Snapshot},
+    checkpoint::{ChangeKind, Repository, Snapshot},
     keymap::{Action, Keymap},
     rpc::{RunState, RunStatus},
     storage::Message,
@@ -51,6 +51,8 @@ pub struct ReadingItem {
     pub version: String,
     pub intent: String,
     pub code: String,
+    pub diff: String,
+    pub change: Option<ChangeKind>,
     pub evidence: String,
     pub explanation: String,
     pub read: bool,
@@ -62,6 +64,7 @@ pub struct App {
     pub name: String,
     pub content_revision: u64,
     pub branch: String,
+    pub latest_checkpoint: Option<String>,
     pub items: Vec<ReadingItem>,
     pub selected: usize,
     pub view: View,
@@ -93,6 +96,7 @@ impl App {
             name: "工作台".into(),
             content_revision: 0,
             branch: String::new(),
+            latest_checkpoint: None,
             items: Vec::new(),
             selected: 0,
             view: View::Review,
@@ -136,6 +140,8 @@ impl App {
                 title: path.clone(),
                 version: snapshot.commit.clone(),
                 intent: String::new(),
+                diff: String::new(),
+                change: None,
                 code: repo
                     .read(&snapshot, path)
                     .unwrap_or_else(|error| format!("无法打开：{error}")),
@@ -147,20 +153,7 @@ impl App {
             })
             .collect();
         if snapshot.parent.is_some() {
-            app.items.insert(
-                0,
-                ReadingItem {
-                    title: "变更".into(),
-                    version: snapshot.commit.clone(),
-                    intent: String::new(),
-                    code: repo.diff(&snapshot)?,
-                    evidence: String::new(),
-                    explanation: String::new(),
-                    read: false,
-                    scroll: 0,
-                    evidence_scroll: 0,
-                },
-            );
+            app.append_checkpoint(repo, &snapshot)?;
         }
         if repo.is_dirty()? {
             app.status = "工作区有未提交改动 · 当前为固定快照".into();
@@ -168,8 +161,8 @@ impl App {
         Ok(app)
     }
 
-    /// Append all changed files (not subject to the baseline's 80-file preview cap).
-    /// Titles distinguish task artifacts from baseline files; every read uses its commit.
+    /// Retain immutable versions internally; the sidebar projects one row per path.
+    /// Incoming versions never replace the user's selected historical reading item.
     pub fn append_checkpoint(&mut self, repo: &Repository, snapshot: &Snapshot) -> Result<()> {
         let changes = repo.snapshot_changes(snapshot)?;
         let summary = self
@@ -179,54 +172,42 @@ impl App {
             .find(|m| m.role == "assistant")
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        let mut delivery = vec![ReadingItem {
-            title: "变更".into(),
-            version: snapshot.commit.clone(),
-            intent: self.task.clone().unwrap_or_default(),
-            code: repo.diff(snapshot)?,
-            evidence: "测试未运行".into(),
-            explanation: summary,
-            read: false,
-            scroll: 0,
-            evidence_scroll: 0,
-        }];
+        let mut delivery = Vec::new();
         for change in changes {
-            let title = format!(
-                "待审 · {}{}",
-                change.path,
-                if change.deleted {
-                    "（已删除）"
-                } else {
-                    ""
-                }
-            );
             let code = if change.deleted {
-                "该文件在此检查点已删除；请查看整体变更 diff。".into()
+                "该文件在此检查点已删除。".into()
             } else {
                 repo.read(snapshot, &change.path)
                     .unwrap_or_else(|error| format!("无法打开固定版本文件：{error}"))
             };
             delivery.push(ReadingItem {
-                title,
+                title: change.path.clone(),
                 version: snapshot.commit.clone(),
                 intent: self.task.clone().unwrap_or_default(),
                 code,
+                diff: repo.diff_file(snapshot, &change.path)?,
+                change: Some(change.kind),
                 evidence: "测试未运行".into(),
-                explanation: String::new(),
+                explanation: summary.clone(),
                 read: false,
                 scroll: 0,
                 evidence_scroll: 0,
             });
         }
         for item in delivery {
-            if !self
+            if let Some(index) = self
                 .items
                 .iter()
-                .any(|old| old.version == item.version && old.title == item.title)
+                .position(|old| old.version == item.version && old.title == item.title)
             {
+                if self.items[index].change.is_none() {
+                    self.items[index] = item;
+                }
+            } else {
                 self.items.push(item);
             }
         }
+        self.latest_checkpoint = Some(snapshot.commit.clone());
         self.content_revision = self.content_revision.wrapping_add(1);
         Ok(())
     }
@@ -235,7 +216,47 @@ impl App {
         self.items.get(self.selected)
     }
     pub fn pending(&self) -> usize {
-        self.items.iter().filter(|i| !i.read).count()
+        let changed = self.changed_indices();
+        if changed.is_empty() {
+            self.file_indices()
+                .iter()
+                .filter(|&&i| !self.items[i].read)
+                .count()
+        } else {
+            changed.iter().filter(|&&i| !self.items[i].read).count()
+        }
+    }
+    pub fn file_indices(&self) -> Vec<usize> {
+        let mut paths = std::collections::BTreeMap::new();
+        for (index, item) in self.items.iter().enumerate() {
+            if item.change.is_none()
+                || self.latest_checkpoint.as_deref() == Some(item.version.as_str())
+            {
+                paths.insert(item.title.as_str(), index);
+            }
+        }
+        if let Some(item) = self.current() {
+            paths.entry(item.title.as_str()).or_insert(self.selected);
+        }
+        paths.into_values().collect()
+    }
+    pub fn changed_indices(&self) -> Vec<usize> {
+        self.file_indices()
+            .into_iter()
+            .filter(|&i| {
+                self.items[i].change.is_some()
+                    && self.latest_checkpoint.as_deref() == Some(self.items[i].version.as_str())
+            })
+            .collect()
+    }
+    fn open_review(&mut self) {
+        if let Some(index) = self.changed_indices().first() {
+            self.selected = *index;
+        }
+        self.view = View::Review;
+        self.panel = Panel::Reader;
+        self.page = Page::Code;
+        self.filter.clear();
     }
     pub fn can_continue(&self) -> bool {
         self.pending() < 2
@@ -355,7 +376,7 @@ impl App {
     pub fn act(&mut self, action: Action) {
         match action {
             Action::Tasks => self.view = View::Tasks,
-            Action::Review => self.view = View::Review,
+            Action::Review => self.open_review(),
             Action::Project => self.view = View::Project,
             Action::Knowledge => self.view = View::Knowledge,
             Action::NextPanel | Action::PreviousPanel => {
@@ -391,8 +412,8 @@ impl App {
                     };
                 }
             }
-            Action::PreviousItem => self.move_item(-1),
-            Action::NextItem => self.move_item(1),
+            Action::PreviousItem => self.move_review_item(-1),
+            Action::NextItem => self.move_review_item(1),
             Action::Open => {
                 self.panel = Panel::Reader;
                 if self.view == View::Tasks {
@@ -447,12 +468,28 @@ impl App {
         }
     }
 
-    fn move_item(&mut self, delta: isize) {
-        self.selected = self
-            .selected
-            .saturating_add_signed(delta)
-            .min(self.items.len().saturating_sub(1));
+    fn move_in(&mut self, indices: Vec<usize>, delta: isize) {
+        if indices.is_empty() {
+            return;
+        }
+        let path = self.current().map(|item| item.title.as_str());
+        let position = indices
+            .iter()
+            .position(|&i| Some(self.items[i].title.as_str()) == path)
+            .unwrap_or(0);
+        self.selected = indices[position.saturating_add_signed(delta).min(indices.len() - 1)];
         self.filter.clear();
+    }
+    fn move_item(&mut self, delta: isize) {
+        self.move_in(self.file_indices(), delta);
+    }
+    fn move_review_item(&mut self, delta: isize) {
+        let changed = self.changed_indices();
+        if self.view == View::Review && !changed.is_empty() {
+            self.move_in(changed, delta);
+        } else {
+            self.move_item(delta);
+        }
     }
 
     fn command(&mut self, command: &str) {
@@ -460,19 +497,8 @@ impl App {
             "quit" => self.quit = true,
             "help" => self.mode = Mode::Help,
             "theme" => self.light = !self.light,
-            "review" => self.view = View::Review,
-            "changes" => {
-                if let Some(index) = self.items.iter().rposition(|item| item.title == "变更") {
-                    self.selected = index;
-                    self.view = View::Review;
-                    self.panel = Panel::Reader;
-                    self.page = Page::Code;
-                    self.filter.clear();
-                    self.status = "固定版本待审变更 · [ / ] 逐文件查看".into();
-                } else {
-                    self.status = "当前没有已保存的审核检查点".into();
-                }
-            }
+            "review" => self.open_review(),
+            "changes" => self.open_review(),
             "tasks" => self.view = View::Tasks,
             "project" => self.view = View::Project,
             "knowledge" => self.view = View::Knowledge,
@@ -602,7 +628,13 @@ impl App {
                 };
                 let text = match self.page {
                     Page::Intent => &item.intent,
-                    Page::Code => &item.code,
+                    Page::Code => {
+                        if item.change.is_some() {
+                            &item.diff
+                        } else {
+                            &item.code
+                        }
+                    }
                     Page::Evidence => &item.evidence,
                 };
                 if text.is_empty() {

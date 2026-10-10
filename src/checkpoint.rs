@@ -16,10 +16,18 @@ pub struct Snapshot {
     pub reference: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
     pub deleted: bool,
+    pub kind: ChangeKind,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +169,11 @@ impl Repository {
             changes.push(FileChange {
                 path: path.into(),
                 deleted: status == "D",
+                kind: match status {
+                    "A" => ChangeKind::Added,
+                    "D" => ChangeKind::Deleted,
+                    _ => ChangeKind::Modified,
+                },
             });
         }
         Ok(changes)
@@ -187,6 +200,26 @@ impl Repository {
                 parent,
                 &snapshot.commit,
                 "--",
+            ],
+            None,
+        )
+    }
+
+    pub fn diff_file(&self, snapshot: &Snapshot, path: &str) -> Result<String> {
+        validate_path(path)?;
+        let parent = snapshot.parent.as_ref().context("检查点没有差异基线")?;
+        let literal = format!(":(literal){path}");
+        self.git(
+            &[
+                "--no-pager",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                parent,
+                &snapshot.commit,
+                "--",
+                &literal,
             ],
             None,
         )

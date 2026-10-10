@@ -84,16 +84,14 @@ for line in sys.stdin.buffer:
     assert!(
         app.items
             .iter()
-            .find(|item| item.title == "变更")
+            .find(|item| item.change.is_some())
             .unwrap()
-            .code
+            .diff
             .contains("+agent changed")
     );
-    assert!(
-        app.items
-            .iter()
-            .any(|item| item.title == "待审 · main.rs" && item.code == "agent changed")
-    );
+    assert!(app.items.iter().any(|item| item.title == "main.rs"
+        && item.change.is_some()
+        && item.code == "agent changed"));
     assert_eq!(store.history(&run.session).unwrap().len(), 2);
     store.save(&app).unwrap();
     drop(run);

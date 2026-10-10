@@ -127,17 +127,17 @@ for line in sys.stdin.buffer:
                                    stdin=slave, stdout=slave, stderr=slave,
                                    env={**os.environ, 'TERM': 'xterm-256color'})
         drain(0.5)
-        send(b':changes\r')
+        send(b'2')
         drain(0.4)
         with sqlite3.connect(database) as db:
             saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
-        assert saved['selected'][1] == '变更', saved
+        assert saved['selected'][1] == 'main.rs', saved
         send(b']')
         drain(0.4)
         with sqlite3.connect(database) as db:
             saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
             checkpoint = db.execute('SELECT checkpoint FROM runs').fetchone()[0]
-        assert saved['selected'] == [checkpoint, '待审 · main.rs'], saved
+        assert saved['selected'] == [checkpoint, 'main.rs'], saved
         send(b'q')
         assert process.wait(timeout=3) == 0
         assert termios.tcgetattr(slave) == before

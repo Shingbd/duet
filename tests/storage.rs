@@ -12,6 +12,8 @@ fn app(version: &str) -> App {
         version: version.into(),
         intent: String::new(),
         code: String::new(),
+        diff: String::new(),
+        change: None,
         evidence: String::new(),
         explanation: String::new(),
         read: false,

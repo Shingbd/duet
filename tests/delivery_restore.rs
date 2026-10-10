@@ -74,14 +74,14 @@ fn restart_restores_all_changed_files_selection_and_progress_from_exact_snapshot
     assert_eq!(
         app.items
             .iter()
-            .filter(|item| item.title.starts_with("待审 ·"))
+            .filter(|item| item.change.is_some())
             .count(),
         86
     );
     let selected = app
         .items
         .iter()
-        .position(|item| item.title == "待审 · z-contract-84.rs")
+        .position(|item| item.title == "z-contract-84.rs")
         .unwrap();
     app.selected = selected;
     app.items[selected].read = true;
@@ -110,7 +110,7 @@ fn restart_restores_all_changed_files_selection_and_progress_from_exact_snapshot
     let mut restored = App::browse(&repo, repo.baseline().unwrap(), Keymap::default()).unwrap();
     store.restore(&mut restored).unwrap();
     let current = restored.current().unwrap();
-    assert_eq!(current.title, "待审 · z-contract-84.rs");
+    assert_eq!(current.title, "z-contract-84.rs");
     assert_eq!(current.version, snapshot.commit);
     assert!(current.code.starts_with("fixed delivery 84"));
     assert!(current.read);
@@ -119,8 +119,7 @@ fn restart_restores_all_changed_files_selection_and_progress_from_exact_snapshot
         restored
             .items
             .iter()
-            .any(|item| item.title == "待审 · gone 文件.rs（已删除）"
-                && item.code.contains("已删除"))
+            .any(|item| item.title == "gone 文件.rs" && item.code.contains("已删除"))
     );
     let count = restored.items.len();
     store.restore(&mut restored).unwrap();
@@ -134,9 +133,9 @@ fn restart_restores_all_changed_files_selection_and_progress_from_exact_snapshot
         text: "changes".into(),
     };
     restored.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(restored.current().unwrap().title, "变更");
+    assert_eq!(restored.current().unwrap().title, "gone 文件.rs");
     assert_eq!(restored.current().unwrap().version, snapshot.commit);
-    assert!(restored.body().contains("z-contract-84.rs"));
+    assert!(restored.body().contains("-removed source"));
 }
 
 #[test]

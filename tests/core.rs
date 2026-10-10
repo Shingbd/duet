@@ -15,6 +15,8 @@ fn item() -> ReadingItem {
         version: "test".into(),
         intent: String::new(),
         code: "fn main() {}".into(),
+        diff: String::new(),
+        change: None,
         evidence: String::new(),
         explanation: String::new(),
         read: false,
@@ -138,7 +140,9 @@ fn delivery_does_not_move_reading_position_or_focus() {
 #[test]
 fn unread_backpressure_pauses_until_human_finishes() {
     let mut app = fixture_app();
-    assert!(app.enqueue(item()));
+    let mut second = item();
+    second.title = "second.rs".into();
+    assert!(app.enqueue(second));
     assert!(!app.can_continue());
     assert!(!app.enqueue(item()));
     app.act(Action::MarkRead);

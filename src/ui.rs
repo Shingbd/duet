@@ -289,22 +289,46 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
 }
 
 fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let items: Vec<ListItem> = app
-        .items
+    let indices = if app.view == View::Review {
+        app.changed_indices()
+    } else {
+        app.file_indices()
+    };
+    let selected_path = app.current().map(|item| item.title.as_str());
+    let selected_row = indices
+        .iter()
+        .position(|&i| Some(app.items[i].title.as_str()) == selected_path);
+    let items: Vec<ListItem> = indices
         .iter()
         .enumerate()
-        .map(|(i, item)| {
+        .map(|(row, &i)| {
+            let item = &app.items[i];
+            let kind = match item.change {
+                Some(crate::checkpoint::ChangeKind::Added) => "A",
+                Some(crate::checkpoint::ChangeKind::Modified) => "M",
+                Some(crate::checkpoint::ChangeKind::Deleted) => "D",
+                None => " ",
+            };
+            let color = match item.change {
+                Some(crate::checkpoint::ChangeKind::Added) => theme.good,
+                Some(crate::checkpoint::ChangeKind::Modified) => theme.warning,
+                Some(crate::checkpoint::ChangeKind::Deleted) => theme.removed,
+                None if Some(row) == selected_row => theme.accent,
+                None => theme.muted,
+            };
             let marker = if item.read { "✓" } else { "○" };
-            let style = if i == app.selected {
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD)
+            let style = if Some(row) == selected_row {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.muted)
+                Style::default().fg(color)
             };
             ListItem::new(Line::from(format!(
-                "{} {marker} {}",
-                if i == app.selected { "›" } else { " " },
+                "{} {kind} {marker} {}",
+                if Some(row) == selected_row {
+                    "›"
+                } else {
+                    " "
+                },
                 safe_text(&item.title)
             )))
             .style(style)
@@ -312,7 +336,7 @@ fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         .collect();
     // Window follows selection only when the user moves selection, never new delivery.
     let visible = area.height.saturating_sub(2).max(1) as usize;
-    let start = app.selected.saturating_sub(visible - 1);
+    let start = selected_row.unwrap_or(0).saturating_sub(visible - 1);
     frame.render_widget(
         List::new(
             items
@@ -335,6 +359,7 @@ struct ReaderKey {
     version: String,
     filter: String,
     revision: u64,
+    is_diff: bool,
 }
 #[derive(Default)]
 struct ReaderCache {
@@ -346,6 +371,8 @@ impl ReaderCache {
     fn prepare(&mut self, app: &App, width: u16) {
         let key = ReaderKey {
             width,
+            is_diff: app.view == View::Review
+                && app.current().is_some_and(|item| item.change.is_some()),
             selected: app.selected,
             view: app.view,
             page: app.page,
@@ -366,6 +393,12 @@ impl ReaderCache {
         self.builds += 1;
         let page = match app.page {
             Page::Intent => "意图",
+            Page::Code
+                if app.view == View::Review
+                    && app.current().is_some_and(|item| item.change.is_some()) =>
+            {
+                "差异"
+            }
             Page::Code => "代码",
             Page::Evidence => "证据",
         };
