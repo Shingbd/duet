@@ -3,6 +3,7 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -13,6 +14,16 @@ pub struct WorkspaceStore {
     connection: Connection,
     directory: PathBuf,
     _lock: fs::File,
+    last_ui: Option<String>,
+    last_progress: HashMap<(String, String), (bool, u16, u16)>,
+}
+
+impl Drop for WorkspaceStore {
+    fn drop(&mut self) {
+        // Explicit unlock releases ownership even during another thread's fork/exec,
+        // whose short-lived child may temporarily inherit the open file description.
+        let _ = self._lock.unlock();
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -23,6 +34,8 @@ struct SavedUi {
     page: Page,
     selected: Option<(String, String)>,
     notes: Vec<String>,
+    #[serde(default)]
+    task_scroll: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,13 +137,15 @@ impl WorkspaceStore {
         }
         // Exclusive project lock ensures these cannot belong to another live instance.
         connection.execute(
-            "UPDATE runs SET status='Interrupted' WHERE status='Running'",
+            "UPDATE runs SET status='Interrupted' WHERE status IN ('Running','Pausing','Paused','Cancelling')",
             [],
         )?;
         Ok(Self {
             connection,
             directory,
             _lock: lock,
+            last_ui: None,
+            last_progress: HashMap::new(),
         })
     }
 
@@ -179,6 +194,7 @@ impl WorkspaceStore {
             app.panel = saved.panel;
             app.page = saved.page;
             app.notes = saved.notes;
+            app.task_scroll = saved.task_scroll;
             if let Some((version, title)) = saved.selected
                 && let Some(index) = app
                     .items
@@ -201,8 +217,11 @@ impl WorkspaceStore {
             app.history = self
                 .history(&session)?
                 .into_iter()
-                .map(|message| format!("{}\n{}", message.role, message.content))
+                .filter(|message| !message.content.trim().is_empty())
                 .collect();
+            if status == "Interrupted" {
+                app.status = "会话已中断 · 不自动续跑；未发送的纠正需重新提交".into();
+            }
             app.run.status = match status.as_str() {
                 "Settled" => crate::rpc::RunStatus::Settled,
                 "Failed" => crate::rpc::RunStatus::Failed,
@@ -234,29 +253,54 @@ impl WorkspaceStore {
                 .current()
                 .map(|item| (item.version.clone(), item.title.clone())),
             notes: app.notes.clone(),
+            task_scroll: app.task_scroll,
         };
         let encoded = serde_json::to_string(&saved)?;
+        let changed_ui = self.last_ui.as_ref() != Some(&encoded);
+        let changed: Vec<_> = app
+            .items
+            .iter()
+            .filter(|item| {
+                self.last_progress
+                    .get(&(item.version.clone(), item.title.clone()))
+                    != Some(&(item.read, item.scroll, item.evidence_scroll))
+            })
+            .collect();
+        if !changed_ui && changed.is_empty() {
+            return Ok(());
+        }
         let tx = self.connection.transaction()?;
-        tx.execute(
-            "INSERT INTO ui_state(key,value) VALUES('workspace',?1)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [encoded],
-        )?;
-        for item in &app.items {
+        if changed_ui {
             tx.execute(
+                "INSERT INTO ui_state(key,value) VALUES('workspace',?1)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [&encoded],
+            )?;
+        }
+        {
+            let mut statement = tx.prepare_cached(
                 "INSERT INTO reading_progress VALUES(?1,?2,?3,?4,?5)
                 ON CONFLICT(version,path) DO UPDATE SET is_read=excluded.is_read,
                     scroll=excluded.scroll, evidence_scroll=excluded.evidence_scroll",
-                params![
+            )?;
+            for item in &changed {
+                statement.execute(params![
                     item.version,
                     item.title,
                     item.read,
                     item.scroll,
                     item.evidence_scroll
-                ],
-            )?;
+                ])?;
+            }
         }
         tx.commit()?;
+        self.last_ui = Some(encoded);
+        for item in changed {
+            self.last_progress.insert(
+                (item.version.clone(), item.title.clone()),
+                (item.read, item.scroll, item.evidence_scroll),
+            );
+        }
         Ok(())
     }
 

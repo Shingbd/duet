@@ -29,6 +29,8 @@ pub enum Action {
     Theme,
     MarkRead,
     Cancel,
+    Pause,
+    Reply,
     Quit,
 }
 
@@ -51,6 +53,8 @@ pub const ACTIONS: &[(Action, &str, &[&str])] = &[
     (Action::Search, "搜索内容", &["/"]),
     (Action::Theme, "切换深浅主题", &["t"]),
     (Action::MarkRead, "标记已读（不代表批准）", &["m"]),
+    (Action::Pause, "暂停 / 继续编码", &["p"]),
+    (Action::Reply, "纠正 / 追问 AI", &["i"]),
     (Action::Cancel, "取消编码", &["ctrl+x"]),
     (Action::Quit, "退出", &["q", "ctrl+c"]),
 ];

@@ -16,6 +16,8 @@ pub const MAX_RECORD_BYTES: usize = 1_048_576;
 pub enum RunStatus {
     Idle,
     Running,
+    Pausing,
+    Paused,
     Cancelling,
     Settled,
     Aborted,
@@ -25,6 +27,7 @@ pub enum RunStatus {
 #[derive(Debug, Clone)]
 pub struct RunState {
     pub status: RunStatus,
+    pub streaming_text: bool,
     pub text: String,
     pub error: Option<String>,
     pub tool_count: usize,
@@ -34,6 +37,7 @@ impl Default for RunState {
     fn default() -> Self {
         Self {
             status: RunStatus::Idle,
+            streaming_text: false,
             text: String::new(),
             error: None,
             tool_count: 0,
@@ -67,22 +71,22 @@ impl RunState {
                 self.status = RunStatus::Running;
                 self.error = None;
             }
+            "message_start" if record["message"]["role"] == "assistant" => {
+                self.text.clear();
+                self.streaming_text = false;
+            }
             "message_update" => {
                 let update = &record["assistantMessageEvent"];
                 if update["type"] == "text_delta" {
+                    self.streaming_text = true;
                     append_bounded(&mut self.text, update["delta"].as_str().unwrap_or(""));
                 }
             }
             "message_end" if record["message"]["role"] == "assistant" => {
+                self.streaming_text = false;
                 let message = &record["message"];
-                self.text = message["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|block| block["type"] == "text")
-                    .filter_map(|block| block["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                self.text = message_text(message);
+
                 truncate_utf8(&mut self.text, MAX_RECORD_BYTES);
                 if message["stopReason"] == "error" {
                     self.error = Some(
@@ -107,6 +111,21 @@ impl RunState {
             _ => {}
         }
     }
+}
+
+/// Only visible text belongs in the chat; thinking/tool blocks remain in raw Pi logs.
+pub fn message_text(message: &Value) -> String {
+    if let Some(text) = message["content"].as_str() {
+        return text.into();
+    }
+    message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn append_bounded(target: &mut String, delta: &str) {

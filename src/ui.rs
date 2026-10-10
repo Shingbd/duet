@@ -9,6 +9,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy)]
@@ -57,7 +58,24 @@ impl Theme {
     }
 }
 
+#[derive(Default)]
+pub struct Renderer {
+    reader: ReaderCache,
+}
+impl Renderer {
+    pub fn layout_builds(&self) -> usize {
+        self.reader.builds
+    }
+    pub fn draw(&mut self, frame: &mut Frame, app: &App) {
+        draw_cached(frame, app, &mut self.reader);
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
+    Renderer::default().draw(frame, app);
+}
+
+fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
     let theme = Theme::new(app.light);
     let area = frame.area();
     frame.render_widget(
@@ -139,7 +157,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let body = rows[2];
     if app.fullscreen {
-        reader(frame, app, body, theme);
+        reader(frame, app, body, theme, cache);
     } else if body.width >= 116 {
         let cols = Layout::horizontal([
             Constraint::Length(28),
@@ -148,7 +166,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(body);
         queue(frame, app, cols[0], theme);
-        reader(frame, app, cols[1], theme);
+        reader(frame, app, cols[1], theme, cache);
         evidence(frame, app, cols[2], theme);
     } else if body.width >= 78 {
         let cols = Layout::horizontal([Constraint::Length(25), Constraint::Min(30)]).split(body);
@@ -156,19 +174,27 @@ pub fn draw(frame: &mut Frame, app: &App) {
         if app.panel == Panel::Evidence {
             evidence(frame, app, cols[1], theme);
         } else {
-            reader(frame, app, cols[1], theme);
+            reader(frame, app, cols[1], theme, cache);
         }
     } else {
         match app.panel {
             Panel::Queue => queue(frame, app, body, theme),
-            Panel::Reader => reader(frame, app, body, theme),
+            Panel::Reader => reader(frame, app, body, theme, cache),
             Panel::Evidence => evidence(frame, app, body, theme),
         }
     }
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                format!(" {}", safe_text(&app.status)),
+                format!(
+                    " 焦点：{} · {}",
+                    match app.panel {
+                        Panel::Queue => "文件列表",
+                        Panel::Reader => "内容",
+                        Panel::Evidence => "说明 / 验证",
+                    },
+                    safe_text(&app.status)
+                ),
                 Style::default().fg(theme.warning),
             )),
             Line::from(Span::styled(
@@ -196,6 +222,27 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 .map(|(_, keys, label)| Line::from(format!("{keys:14} {label}")))
                 .collect();
             popup(frame, theme, " 快捷键 · Esc 关闭 ", lines, 64, 24);
+        }
+        Mode::Message { text } => {
+            let title = if matches!(
+                app.run.status,
+                crate::rpc::RunStatus::Paused | crate::rpc::RunStatus::Pausing
+            ) {
+                " 记录纠正 · 继续后才发送 "
+            } else {
+                " 发给 AI · 仍有编码权限 "
+            };
+            popup(
+                frame,
+                theme,
+                title,
+                vec![
+                    Line::from(safe_text(text)),
+                    Line::from("Enter 提交 · Esc 返回 · 运行中消息在工具边界接收"),
+                ],
+                76,
+                6,
+            );
         }
         Mode::Input { search, text } => {
             let title = if *search {
@@ -279,54 +326,163 @@ fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     );
 }
 
-fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let page = match app.page {
-        Page::Intent => "意图",
-        Page::Code => "代码",
-        Page::Evidence => "证据",
-    };
-    let mut content = Vec::new();
-    if let Some(item) = app.current() {
-        content.push(Line::from(Span::styled(
-            format!("{} · {}", page, safe_text(&item.version)),
-            Style::default().fg(theme.muted),
-        )));
-        content.push(Line::from(""));
-    }
-    let body = app.body();
-    for line in body
-        .split('\n')
-        .filter(|line| app.filter.is_empty() || line.contains(&app.filter))
-    {
-        let line = safe_text(line);
-        let color = if line.starts_with('+') {
-            theme.good
-        } else if line.starts_with('-') {
-            theme.removed
-        } else {
-            theme.text
+#[derive(PartialEq, Eq)]
+struct ReaderKey {
+    width: u16,
+    selected: usize,
+    view: View,
+    page: Page,
+    version: String,
+    filter: String,
+    revision: u64,
+}
+#[derive(Default)]
+struct ReaderCache {
+    key: Option<ReaderKey>,
+    lines: Vec<(String, i8)>,
+    builds: usize,
+}
+impl ReaderCache {
+    fn prepare(&mut self, app: &App, width: u16) {
+        let key = ReaderKey {
+            width,
+            selected: app.selected,
+            view: app.view,
+            page: app.page,
+            version: app
+                .current()
+                .map_or_else(String::new, |item| item.version.clone()),
+            filter: app.filter.clone(),
+            revision: if matches!(app.view, View::Tasks | View::Knowledge) {
+                app.content_revision
+            } else {
+                0
+            },
         };
-        content.push(Line::from(Span::styled(line, Style::default().fg(color))));
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        self.lines.clear();
+        self.builds += 1;
+        let page = match app.page {
+            Page::Intent => "意图",
+            Page::Code => "代码",
+            Page::Evidence => "证据",
+        };
+        if app.view == View::Tasks {
+            for (line, role) in app
+                .task_lines()
+                .into_iter()
+                .filter(|(line, _)| app.filter.is_empty() || line.contains(&app.filter))
+            {
+                for wrapped in wrap_cells(&safe_text(&line), width as usize) {
+                    self.lines.push((wrapped, role));
+                }
+            }
+            self.key = Some(key);
+            return;
+        }
+        if let Some(item) = app.current() {
+            for line in wrap_cells(
+                &format!("{page} · {}", safe_text(&item.version)),
+                width as usize,
+            ) {
+                self.lines.push((line, 2));
+            }
+            self.lines.push((String::new(), 2));
+        }
+        let body = app.body();
+        for line in body
+            .split('\n')
+            .filter(|line| app.filter.is_empty() || line.contains(&app.filter))
+        {
+            let role = if line.starts_with('+') {
+                1
+            } else if line.starts_with('-') {
+                -1
+            } else {
+                0
+            };
+            for wrapped in wrap_cells(&safe_text(line), width as usize) {
+                self.lines.push((wrapped, role));
+            }
+        }
+        self.key = Some(key);
     }
+}
+
+/// Cell-aware wrapping happens once per content/width change, not on each scroll.
+/// Grapheme boundaries preserve CJK, emoji and combining characters.
+pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut columns = 0;
+    for glyph in text.graphemes(true) {
+        let size = glyph.width();
+        if columns + size > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            columns = 0;
+        }
+        if size > width {
+            line.push('�');
+            columns += 1;
+        } else {
+            line.push_str(glyph);
+            columns += size;
+        }
+    }
+    lines.push(line);
+    lines
+}
+
+fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
+    cache.prepare(app, area.width.saturating_sub(2));
+    let scroll = if app.view == View::Tasks {
+        app.task_scroll
+    } else {
+        app.current().map_or(0, |item| item.scroll)
+    } as usize;
+    let content: Vec<Line> = cache
+        .lines
+        .iter()
+        .skip(scroll)
+        .take(area.height.saturating_sub(2) as usize)
+        .map(|(text, role)| {
+            let color = match role {
+                1 => theme.good,
+                -1 => theme.removed,
+                2 => theme.muted,
+                3 | 7 => theme.accent,
+                4 | 8 => theme.good,
+                _ => theme.text,
+            };
+            let style = if matches!(role, 7 | 8) {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(color)
+            };
+            Line::from(Span::styled(text.as_str(), style))
+        })
+        .collect();
     frame.render_widget(
-        Paragraph::new(content)
-            .block(theme.block(
-                format!(
-                        " {} ",
-                        match app.view {
-                            View::Tasks => "任务详情".to_owned(),
-                            View::Knowledge => "笔记".to_owned(),
-                            View::Project => "项目".to_owned(),
-                            View::Review => app
-                                .current()
-                                .map(|item| safe_text(&item.title))
-                                .unwrap_or_else(|| "代码 / 变更".into()),
-                        }
-                    ),
-                app.panel == Panel::Reader,
-            ))
-            .wrap(Wrap { trim: false })
-            .scroll((app.current().map_or(0, |item| item.scroll), 0)),
+        Paragraph::new(content).block(theme.block(
+            format!(
+                    " {} ",
+                    match app.view {
+                        View::Tasks => "任务详情".to_owned(),
+                        View::Knowledge => "笔记".to_owned(),
+                        View::Project => "项目".to_owned(),
+                        View::Review => app
+                            .current()
+                            .map(|item| safe_text(&item.title))
+                            .unwrap_or_else(|| "代码 / 变更".into()),
+                    }
+                ),
+            app.panel == Panel::Reader,
+        )),
         area,
     );
 }
@@ -362,19 +518,17 @@ fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
 
 /// Never emit terminal control sequences from repository or model content.
 pub fn safe_text(text: &str) -> String {
-    text.chars()
-        .map(|ch| {
-            if ch == '\t' {
-                "    ".to_owned()
-            } else if ch == '\n' {
-                "\n".to_owned()
-            } else if ch.is_control() {
-                "�".to_owned()
-            } else {
-                ch.to_string()
-            }
-        })
-        .collect()
+    let mut output = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch == '\t' {
+            output.push_str("    ");
+        } else if ch == '\n' || !ch.is_control() {
+            output.push(ch);
+        } else {
+            output.push('�');
+        }
+    }
+    output
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

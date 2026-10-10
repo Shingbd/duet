@@ -29,6 +29,64 @@ fn fixture_app() -> App {
 }
 
 #[test]
+fn lowercase_jk_navigate_and_uppercase_keys_remain_unbound() {
+    let mut app = fixture_app();
+    assert_eq!(app.keymap.resolve(key(KeyCode::Char('J'))), None);
+    assert_eq!(
+        app.keymap
+            .resolve(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT)),
+        None
+    );
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.current().unwrap().scroll, 1);
+    for c in ['J', 'K'] {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.current().unwrap().scroll, 1);
+    app.handle_key(key(KeyCode::Char('k')));
+    assert_eq!(app.current().unwrap().scroll, 0);
+    let custom = Keymap::from_overrides(BTreeMap::from([
+        ("palette".into(), vec!["J".into()]),
+        ("theme".into(), vec!["K".into()]),
+    ]))
+    .unwrap();
+    assert_eq!(
+        custom.resolve(key(KeyCode::Char('J'))),
+        Some(Action::Palette)
+    );
+    assert_eq!(custom.resolve(key(KeyCode::Char('K'))), Some(Action::Theme));
+    app.mode = Mode::Input {
+        search: false,
+        text: String::new(),
+    };
+    for c in "jJkK".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        app.mode,
+        Mode::Input {
+            search: false,
+            text: "jJkK".into()
+        }
+    );
+    assert_eq!(app.current().unwrap().scroll, 0);
+}
+
+#[test]
+fn fullscreen_navigation_cannot_target_a_hidden_panel() {
+    let mut app = fixture_app();
+    app.panel = Panel::Queue;
+    app.act(Action::Fullscreen);
+    assert!(app.fullscreen);
+    assert_eq!(app.panel, Panel::Reader);
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.current().unwrap().scroll, 1);
+    app.act(Action::NextPanel);
+    assert!(!app.fullscreen);
+    assert_eq!(app.panel, Panel::Evidence);
+}
+
+#[test]
 fn empty_workspace_has_no_sample_data_and_navigation_is_safe() {
     let mut app = App::empty(Keymap::default());
     for action in [

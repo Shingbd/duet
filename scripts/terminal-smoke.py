@@ -13,9 +13,10 @@ import sqlite3
 import json
 import termios
 import time
+import sys
 
 root = pathlib.Path(__file__).resolve().parents[1]
-binary = root / "target/debug/duet-workbench"
+binary = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / "target/debug/duet-workbench"
 assert binary.exists(), "Run cargo build first"
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)

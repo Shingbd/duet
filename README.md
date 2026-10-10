@@ -5,7 +5,7 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
 ## 打开项目
 
 ```bash
-./target/debug/duet-workbench open /path/to/project
+./target/release/duet-workbench open /path/to/project
 ```
 
 首次打开自动创建 `.duet/`，再次打开恢复笔记、阅读位置、主题及最近任务对话。支持普通文件夹；Git 项目默认阅读固定 HEAD，不覆盖未提交改动。
@@ -33,14 +33,29 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
 
 - 创建独立 worktree 和任务分支，原工作区不变。
 - Pi 运行期间可同步阅读基线和记笔记。
-- 对话持久保存；完成后生成固定检查点供审核。
+- 对话按“你 / AI”分块并用不同颜色显示；工具/思考专用的空正文不会作为聊天消息展示，旧空消息重启时也会隐藏。
+- 对话持久保存；本轮结束后生成固定检查点供审核，当前会话仍可明确追问；退出后不自动续跑。
 - 不自动测试、合并、部署或递归启动任务。
 - 不加载 Pi 扩展、MCP、skills 或仓库上下文；仅开放文件读取、编辑和写入等工具，不开放 bash。
-- 默认超时 600 秒；浏览状态 Ctrl+X 取消，退出中断正在运行的任务。
+- 默认超时 600 秒；浏览状态 p 暂停/继续，i 纠正/追问，Ctrl+X 取消，退出中断任务。
+- 暂停按 clear_queue → abort → get_state 确认停止，保留已产生的改动，不回滚。暂停时输入的纠正仅记录，明确继续后才发送；暂停等待时间不计入剩余执行时间。
+- 运行中发送的消息在工具调用边界接收，不代表立即中断。需立即制止时先暂停，并等待“已暂停”。
 - 工作目录和 worktree 不是安全沙箱；授权后 Agent 仍有当前账号的文件访问权限，模型调用可能向提供商发送代码。
 - 未提交的源项目改动不自动纳入任务基线。
 
 非交互执行可加 `--headless`，仍需明确写入授权。默认交互界面不展示任何虚构教学内容。任务完成后仍须人类审核。
+
+## 纠正与追问
+
+按 `1` 进入任务视图：
+1. 发现方向不对，按 `p`，等状态变为“已暂停”。
+2. 按 `i` 输入纠正意见，Enter 提交；此时只记录，AI 不会自行继续。
+3. 再按 `p` 明确继续，沿用原会话及工作区执行纠正。
+4. 运行中或本轮结束后也可按 `i` 追问，输入内容会交给同一编码会话。
+
+对应命令：`:pause`、`:resume`、`:say 消息`、`:cancel`。
+发送对话仍可能触发文件修改，**尚无独立的只读讨论模式**；输入框会显示“仍有编码权限”。
+退出/重启不恢复运行中的 Pi；暂停期间未发送的纠正需重新提交。已有文件改动和历史记录保留。
 
 ## 其他命令
 
@@ -52,7 +67,8 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
 
 ## 操作
 
-1—4 切视图；Tab 切面板；方向键或 j/k 浏览；[ / ] 切文件；Enter 切内容页。
+1—4 切视图；Tab 切面板；方向键或小写 j/k 浏览（大写 J/K 默认未绑定，保留扩展）；[ / ] 切文件；Enter 切内容页。
+底栏显示当前焦点：文件列表中 j/k 切文件，内容中 j/k 滚动；全屏自动聚焦内容，Tab 返回多面板。输入命令/搜索时 j/k 正常输入，Esc 返回浏览。
 e 切说明；f 全屏；t 切主题；/ 搜索；: 输入命令；? 帮助。
 m 标记已读，不代表批准。命令 `note 内容` 保存笔记。快捷键可通过 `--keymap` 配置。
 
@@ -66,11 +82,26 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build
 python3 scripts/terminal-smoke.py
+python3 scripts/navigation-smoke.py target/release/duet-workbench
+python3 scripts/conversation-smoke.py target/release/duet-workbench
 ```
 
 Unix 假 RPC 和 PTY 测试需要 Python 3。自动测试不调用真实模型。
 crates.io 较慢时可为构建命令添加：
 `--config 'source.crates-io.replace-with="ustc"' --config 'source.ustc.registry="sparse+https://mirrors.ustc.edu.cn/crates.io-index/"'`。
+
+## 性能与 SSH
+日常运行建议 cargo build --release，再使用 target/release/duet-workbench；debug 编译主要用于开发。
+界面按需重绘，固定文件的折行排版缓存；连续输入合并处理，SQLite 仅写变更。
+笔记与阅读状态在停顿约 300 ms 后保存，连续操作最长约 2 秒批量保存；正常退出立即保存。
+突发崩溃可能丢失最后这段尚未保存的界面状态；真实任务与完整对话消息仍直接持久化。
+
+本地 PTY 性能测试（临时 Git 项目，不调用模型或网络）：
+```bash
+python3 scripts/performance-probe.py target/debug/duet-workbench target/release/duet-workbench
+```
+6000 行文件 / 120×32 终端的优化前后测量见 docs/performance.md。
+这只测本机，不包含 SSH、终端客户端或网络 RTT；高延迟 SSH 仍会给每次反馈增加网络耗时。
 
 ## 当前边界
 

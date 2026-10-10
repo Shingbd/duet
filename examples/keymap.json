@@ -1,5 +1,7 @@
 {
   "quit": ["q", "ctrl+c"],
   "theme": ["t"],
-  "help": ["?"]
+  "help": ["?"],
+  "pause": ["p"],
+  "reply": ["i"]
 }

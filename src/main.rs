@@ -6,7 +6,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use duet_workbench::{
-    app::{App, Mode},
+    app::{App, Mode, RunControl},
     checkpoint::Repository,
     coding::CodingRun,
     keymap::Keymap,
@@ -18,7 +18,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     io::{self, IsTerminal},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Parser)]
@@ -237,28 +237,90 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         previous(info);
     }));
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut renderer = ui::Renderer::default();
+    let mut redraw = true;
+    let mut save_since: Option<Instant> = None;
+    let mut last_input = Instant::now();
     loop {
-        if let Some(coding) = &mut coding {
-            coding.poll(&mut app, &mut store)?;
+        if let Some(coding) = &mut coding
+            && coding.poll(&mut app, &mut store)?
+        {
+            redraw = true;
+            save_since.get_or_insert_with(Instant::now);
         }
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        if redraw {
+            terminal.draw(|frame| renderer.draw(frame, &app))?;
+            redraw = false;
+        }
+        // Paint first; persist batched navigation only after idle or a bounded delay.
+        if save_since.is_some_and(|since| {
+            since.elapsed() >= Duration::from_secs(2)
+                || last_input.elapsed() >= Duration::from_millis(300)
+        }) {
+            store.save(&app)?;
+            save_since = None;
+            if app.status == "笔记已记录 · 仅本次会话" {
+                app.status = "笔记已保存".into();
+                redraw = true;
+            }
+        }
         if app.quit {
             break;
         }
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) => app.handle_key(key),
-                Event::Paste(text) => {
-                    if let Mode::Input { text: input, .. } = &mut app.mode {
-                        input.push_str(&text);
+        let wait = if coding.as_ref().is_some_and(|run| !run.is_finished())
+            && app.run.status != duet_workbench::rpc::RunStatus::Paused
+        {
+            Duration::from_millis(16)
+        } else if save_since.is_some() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(500)
+        };
+        if event::poll(wait)? {
+            // Drain queued input before drawing so key repeats/pastes don't queue frames.
+            for _ in 0..64 {
+                match event::read()? {
+                    Event::Key(key) => app.handle_key(key),
+                    Event::Paste(text) => {
+                        if let Mode::Input { text: input, .. } | Mode::Message { text: input } =
+                            &mut app.mode
+                        {
+                            input.push_str(&text);
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
+                if app.quit || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
+            last_input = Instant::now();
+            redraw = true;
+            save_since.get_or_insert(last_input);
             if std::mem::take(&mut app.cancel_requested)
                 && let Some(coding) = &mut coding
             {
                 coding.cancel(&mut app)?;
+            }
+            for control in std::mem::take(&mut app.controls) {
+                let draft = if let RunControl::Say(text) = &control {
+                    Some(text.clone())
+                } else {
+                    None
+                };
+                let result = if let Some(coding) = &mut coding {
+                    coding.interact(control, &mut app, &mut store)
+                } else {
+                    Err(anyhow::anyhow!(
+                        "当前没有可交互的 Pi 会话；请先用 :code 启动任务"
+                    ))
+                };
+                if let Err(error) = result {
+                    app.status = format!("操作未完成：{error}");
+                    if let Some(text) = draft {
+                        app.mode = Mode::Message { text };
+                    }
+                }
             }
             if let Some(prompt) = app.requested_task.take() {
                 let project = store
@@ -281,10 +343,6 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         app.status = format!("无法开始：{error}");
                     }
                 }
-            }
-            store.save(&app)?;
-            if app.status == "笔记已记录 · 仅本次会话" {
-                app.status = "笔记已保存".into();
             }
         }
     }

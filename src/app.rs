@@ -1,7 +1,8 @@
 use crate::{
     checkpoint::{Repository, Snapshot},
     keymap::{Action, Keymap},
-    rpc::RunState,
+    rpc::{RunState, RunStatus},
+    storage::Message,
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -31,8 +32,17 @@ pub enum Mode {
     Browse,
     Help,
     Input { search: bool, text: String },
+    Message { text: String },
     ConfirmRead,
     ConfirmCode { prompt: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunControl {
+    TogglePause,
+    Pause,
+    Resume,
+    Say(String),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +60,7 @@ pub struct ReadingItem {
 
 pub struct App {
     pub name: String,
+    pub content_revision: u64,
     pub branch: String,
     pub items: Vec<ReadingItem>,
     pub selected: usize,
@@ -65,7 +76,10 @@ pub struct App {
     pub run: RunState,
     pub agent_connected: bool,
     pub cancel_requested: bool,
-    pub history: Vec<String>,
+    pub history: Vec<Message>,
+    pub task_scroll: u16,
+    pub queued_corrections: usize,
+    pub controls: Vec<RunControl>,
     pub task: Option<String>,
     pub requested_task: Option<String>,
     pub keymap: Keymap,
@@ -77,6 +91,7 @@ impl App {
     pub fn empty(keymap: Keymap) -> Self {
         Self {
             name: "工作台".into(),
+            content_revision: 0,
             branch: String::new(),
             items: Vec::new(),
             selected: 0,
@@ -93,6 +108,9 @@ impl App {
             agent_connected: false,
             cancel_requested: false,
             history: Vec::new(),
+            task_scroll: 0,
+            queued_corrections: 0,
+            controls: Vec::new(),
             task: None,
             requested_task: None,
             keymap,
@@ -166,6 +184,7 @@ impl App {
             return false;
         }
         self.items.push(item);
+        self.content_revision = self.content_revision.wrapping_add(1);
         true
     }
 
@@ -174,6 +193,27 @@ impl App {
             return;
         }
         match &mut self.mode {
+            Mode::Message { text } => {
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Browse,
+                    KeyCode::Enter if !text.trim().is_empty() => {
+                        self.controls.push(RunControl::Say(std::mem::take(text)));
+                        self.mode = Mode::Browse;
+                    }
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        text.push(c)
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Mode::Input { search, text } => {
                 match key.code {
                     KeyCode::Esc => self.mode = Mode::Browse,
@@ -183,6 +223,9 @@ impl App {
                         self.mode = Mode::Browse;
                         if is_search {
                             self.filter = value;
+                            if self.view == View::Tasks {
+                                self.task_scroll = 0;
+                            }
                             if let Some(item) = self.items.get_mut(self.selected) {
                                 item.scroll = 0;
                             }
@@ -253,6 +296,7 @@ impl App {
             Action::Project => self.view = View::Project,
             Action::Knowledge => self.view = View::Knowledge,
             Action::NextPanel | Action::PreviousPanel => {
+                self.fullscreen = false;
                 self.panel = match (self.panel, action) {
                     (Panel::Queue, Action::NextPanel)
                     | (Panel::Evidence, Action::PreviousPanel) => Panel::Reader,
@@ -265,6 +309,12 @@ impl App {
             Action::Up | Action::Down => {
                 if self.panel == Panel::Queue {
                     self.move_item(if action == Action::Up { -1 } else { 1 });
+                } else if self.panel == Panel::Reader && self.view == View::Tasks {
+                    self.task_scroll = if action == Action::Up {
+                        self.task_scroll.saturating_sub(1)
+                    } else {
+                        self.task_scroll.saturating_add(1)
+                    };
                 } else if let Some(item) = self.items.get_mut(self.selected) {
                     let scroll = if self.panel == Panel::Reader {
                         &mut item.scroll
@@ -282,6 +332,10 @@ impl App {
             Action::NextItem => self.move_item(1),
             Action::Open => {
                 self.panel = Panel::Reader;
+                if self.view == View::Tasks {
+                    self.task_scroll = 0;
+                    return;
+                }
                 self.page = match self.page {
                     Page::Intent => Page::Code,
                     Page::Code => Page::Evidence,
@@ -292,7 +346,12 @@ impl App {
                 }
             }
             Action::Explain => self.explain = !self.explain,
-            Action::Fullscreen => self.fullscreen = !self.fullscreen,
+            Action::Fullscreen => {
+                self.fullscreen = !self.fullscreen;
+                if self.fullscreen {
+                    self.panel = Panel::Reader;
+                }
+            }
             Action::Help => self.mode = Mode::Help,
             Action::Palette => {
                 self.mode = Mode::Input {
@@ -311,6 +370,14 @@ impl App {
                 if self.current().is_some() {
                     self.mode = Mode::ConfirmRead;
                 }
+            }
+            Action::Pause => self.controls.push(RunControl::TogglePause),
+            Action::Reply => {
+                self.view = View::Tasks;
+                self.panel = Panel::Reader;
+                self.mode = Mode::Message {
+                    text: String::new(),
+                };
             }
             Action::Cancel => self.cancel_requested = true,
             Action::Quit => self.quit = true,
@@ -335,10 +402,19 @@ impl App {
             "project" => self.view = View::Project,
             "knowledge" => self.view = View::Knowledge,
             "read" => self.act(Action::MarkRead),
+            "pause" => self.controls.push(RunControl::Pause),
+            "resume" => self.controls.push(RunControl::Resume),
+            "cancel" => self.cancel_requested = true,
+            value if value.starts_with("say ") && !value[4..].trim().is_empty() => self
+                .controls
+                .push(RunControl::Say(value[4..].trim().into())),
             value if value.starts_with("code ") => {
                 if matches!(
                     self.run.status,
-                    crate::rpc::RunStatus::Running | crate::rpc::RunStatus::Cancelling
+                    RunStatus::Running
+                        | RunStatus::Pausing
+                        | RunStatus::Paused
+                        | RunStatus::Cancelling
                 ) {
                     self.status = "已有任务运行中".into();
                 } else if !value[5..].trim().is_empty() {
@@ -354,30 +430,86 @@ impl App {
                     value[5..].to_owned()
                 };
                 self.notes.push(note);
+                self.content_revision = self.content_revision.wrapping_add(1);
                 self.status = "笔记已记录 · 仅本次会话".into();
             }
             _ => self.status = "未知命令 · :help".into(),
         }
     }
 
+    /// Semantic role tags, not guesses based on message text.
+    pub fn task_lines(&self) -> Vec<(String, i8)> {
+        let Some(task) = &self.task else {
+            return vec![("暂无任务".into(), 2)];
+        };
+        let state = match self.run.status {
+            RunStatus::Idle => "未开始",
+            RunStatus::Running => "运行中",
+            RunStatus::Pausing => "暂停中（等待确认）",
+            RunStatus::Paused => "已暂停",
+            RunStatus::Cancelling => "取消中",
+            RunStatus::Settled => "本轮结束 · 待审核",
+            RunStatus::Aborted => "已中断",
+            RunStatus::Failed => "失败",
+        };
+        let mut lines: Vec<_> = format!("任务：{task}")
+            .split('\n')
+            .map(|line| (line.to_owned(), 2))
+            .collect();
+        lines.extend(vec![
+            (
+                format!(
+                    "状态：{state} · 工具调用 {} · 待发送纠正 {}",
+                    self.run.tool_count, self.queued_corrections
+                ),
+                2,
+            ),
+            (
+                format!(
+                    "{} 暂停/继续 · {} 纠正/追问 · {} 取消",
+                    self.keymap.hint(Action::Pause),
+                    self.keymap.hint(Action::Reply),
+                    self.keymap.hint(Action::Cancel)
+                ),
+                2,
+            ),
+            (String::new(), 0),
+        ]);
+        for message in self.history.iter().filter(|m| !m.content.trim().is_empty()) {
+            let (label, role, header) = match message.role.as_str() {
+                "user" => ("你", 3, 7),
+                "assistant" => ("AI", 4, 8),
+                _ => ("系统", 2, 2),
+            };
+            lines.push((format!("┌─ {label}"), header));
+            lines.extend(
+                message
+                    .content
+                    .split('\n')
+                    .map(|line| (format!("│ {line}"), role)),
+            );
+            lines.push((String::new(), 0));
+        }
+        if self.run.streaming_text && !self.run.text.trim().is_empty() {
+            lines.push(("┌─ AI · 正在回复".into(), 8));
+            lines.extend(
+                self.run
+                    .text
+                    .split('\n')
+                    .map(|line| (format!("│ {line}"), 4)),
+            );
+        }
+        lines
+    }
+
     pub fn body(&self) -> String {
         match self.view {
             View::Tasks => self
-                .task
-                .as_ref()
-                .map(|task| {
-                    format!(
-                        "{task}\n\n状态：{:?} · 工具调用 {}\n\n{}",
-                        self.run.status,
-                        self.run.tool_count,
-                        if self.history.is_empty() {
-                            self.run.text.clone()
-                        } else {
-                            format!("{}\n\n{}", self.history.join("\n\n"), self.run.text)
-                        }
-                    )
-                })
-                .unwrap_or_else(|| "暂无任务".into()),
+                .task_lines()
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+                .join("\n"),
             View::Project => self
                 .current()
                 .map(|item| item.code.clone())
