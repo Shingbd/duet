@@ -15,6 +15,9 @@ pub struct NodeContract {
     pub objective: String,
     /// Literal repository-relative files/directories, not glob patterns. Advisory, not a sandbox.
     pub scope: Vec<String>,
+    /// Responsibilities, non-goals and input/interface boundaries.
+    #[serde(default)]
+    pub boundaries: Vec<String>,
     pub implementation: String,
     pub constraints: Vec<String>,
     pub dependencies: Vec<String>,
@@ -99,12 +102,14 @@ impl TaskPlan {
             text(&node.objective)?;
             text(&node.implementation)?;
             list(&node.scope, true)?;
+            list(&node.boundaries, true)?;
             list(&node.constraints, false)?;
             list(&node.acceptance, true)?;
             list(&node.dependencies, false)?;
             for path in &node.scope {
                 ensure!(
-                    !path.starts_with('/')
+                    !matches!(path.split('/').next(), Some(".git" | ".duet"))
+                        && !path.starts_with('/')
                         && !path.contains(['\\', ':', '*', '?', '\n', '\t'])
                         && (path == "."
                             || path
@@ -148,6 +153,9 @@ impl TaskPlan {
 }
 impl NodeContract {
     pub fn contains_path(&self, path: &str) -> bool {
+        if matches!(path.split('/').next(), Some(".git" | ".duet")) {
+            return false;
+        }
         self.scope.iter().any(|scope| {
             scope == "."
                 || path == scope
@@ -235,6 +243,12 @@ impl NodeRecord {
     pub fn checkpoint(&self) -> Option<&str> {
         self.attempts.last()?.checkpoint.as_deref()
     }
+    pub fn published_checkpoint(&self) -> Option<&str> {
+        self.attempts
+            .iter()
+            .rev()
+            .find_map(|a| a.checkpoint.as_deref())
+    }
     pub fn begin(&mut self, base: &str) {
         self.execution = Execution::Running;
         self.verification = Verification::Unverified;
@@ -272,6 +286,8 @@ pub struct TaskRecord {
     pub state: TaskState,
     pub baseline: Option<String>,
     pub checkpoint: Option<String>,
+    #[serde(default)]
+    pub active_node_id: Option<String>,
     pub plan: Option<TaskPlan>,
     #[serde(default)]
     pub nodes: Vec<NodeRecord>,
@@ -287,6 +303,7 @@ impl TaskRecord {
             state: TaskState::Running,
             baseline: None,
             checkpoint: None,
+            active_node_id: None,
             plan: None,
             nodes: Vec::new(),
             history: Vec::new(),
@@ -336,7 +353,7 @@ impl TaskRecord {
 
 pub fn planning_prompt(goal: &str) -> String {
     format!(
-        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
+        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"boundaries\":[\"责任范围、非目标、输入/接口边界条件\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
         serde_json::to_string(goal).unwrap()
     )
 }

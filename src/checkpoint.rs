@@ -337,7 +337,7 @@ impl Repository {
                 "-p",
                 &parent,
                 "-m",
-                "Duet immutable checkpoint",
+                &format!("Duet immutable checkpoint {nonce}"),
             ],
             None,
         )?;

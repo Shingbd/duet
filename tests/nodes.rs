@@ -6,6 +6,7 @@ fn contract(id: &str, deps: &[&str]) -> NodeContract {
         title: id.into(),
         objective: "具体目标".into(),
         scope: vec!["src".into()],
+        boundaries: vec!["不改变范围外行为".into()],
         implementation: "实现方法".into(),
         constraints: vec![],
         dependencies: deps.iter().map(|s| s.to_string()).collect(),
@@ -55,6 +56,9 @@ fn invalid_plans_never_enter_execution() {
     }
     assert!(contract("n", &[]).contains_path("src/lib.rs"));
     assert!(!contract("n", &[]).contains_path("src_other/lib.rs"));
+    let mut reserved = plan();
+    reserved.nodes[0].scope = vec![".duet".into()];
+    assert!(reserved.validate().is_err());
 }
 #[test]
 fn execution_verification_and_approval_are_independent_and_version_bound() {

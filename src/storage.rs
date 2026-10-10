@@ -19,6 +19,7 @@ pub struct WorkspaceStore {
     _lock: fs::File,
     last_ui: Option<String>,
     last_tasks: HashMap<String, String>,
+    saved_tasks_revision: Option<(usize, u64)>,
     last_progress: HashMap<(String, String), (bool, u16, u16)>,
 }
 
@@ -41,7 +42,11 @@ struct SavedUi {
     #[serde(default)]
     task_scroll: u16,
     #[serde(default)]
+    task_evidence_scroll: u16,
+    #[serde(default)]
     task_selection: Option<crate::app::TaskSelection>,
+    #[serde(default)]
+    review_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +166,7 @@ impl WorkspaceStore {
             _lock: lock,
             last_ui: None,
             last_tasks: HashMap::new(),
+            saved_tasks_revision: None,
             last_progress: HashMap::new(),
         };
         // Import real legacy runs, never manufacture structured contracts for them.
@@ -301,7 +307,9 @@ impl WorkspaceStore {
             app.page = saved.page;
             app.notes = saved.notes;
             app.task_scroll = saved.task_scroll;
+            app.task_evidence_scroll = saved.task_evidence_scroll;
             app.task_selection = saved.task_selection;
+            app.review_version = saved.review_version;
             saved_selection = saved.selected;
         }
         let latest: Option<(String, String, String, String, Option<String>)> = self
@@ -368,7 +376,23 @@ impl WorkspaceStore {
                     if let Some(index) = index {
                         app.append_node_checkpoint(&repo, &snapshot, &task.id, index)
                     } else {
-                        app.append_checkpoint(&repo, &snapshot)
+                        app.append_checkpoint(&repo, &snapshot)?;
+                        let summary = task
+                            .history
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == "assistant")
+                            .map(|m| m.content.as_str())
+                            .unwrap_or("");
+                        for item in app
+                            .items
+                            .iter_mut()
+                            .filter(|i| i.version == snapshot.commit)
+                        {
+                            item.intent = task.prompt.clone();
+                            item.explanation = summary.into();
+                        }
+                        Ok(())
                     }
                 })();
                 if let Err(error) = restored {
@@ -431,8 +455,12 @@ impl WorkspaceStore {
     }
 
     pub fn save(&mut self, app: &App) -> Result<()> {
-        for task in &app.tasks {
-            self.save_task(task)?;
+        let revision = (app.tasks.len(), app.tasks_revision);
+        if self.saved_tasks_revision != Some(revision) {
+            for task in &app.tasks {
+                self.save_task(task)?;
+            }
+            self.saved_tasks_revision = Some(revision);
         }
         let saved = SavedUi {
             light: app.light,
@@ -444,7 +472,9 @@ impl WorkspaceStore {
                 .map(|item| (item.version.clone(), item.title.clone())),
             notes: app.notes.clone(),
             task_scroll: app.task_scroll,
+            task_evidence_scroll: app.task_evidence_scroll,
             task_selection: app.task_selection.clone(),
+            review_version: app.review_version.clone(),
         };
         let encoded = serde_json::to_string(&saved)?;
         let changed_ui = self.last_ui.as_ref() != Some(&encoded);

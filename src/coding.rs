@@ -99,7 +99,7 @@ impl CodingRun {
     ) -> Result<Self> {
         ensure!(!prompt.trim().is_empty(), "任务不能为空");
         let source = Repository::open(project)?;
-        let baseline = source
+        source
             .baseline()
             .context("编码前请先提交项目基线；不会自动提交用户文件")?;
         let id = SystemTime::now()
@@ -116,6 +116,7 @@ impl CodingRun {
         let worktree = parent.join(&id);
         source.create_worktree(&worktree, &branch)?;
         let repo = Repository::open(&worktree)?;
+        let baseline = repo.baseline()?;
         let sessions = store.directory().join("sessions");
         std::fs::create_dir_all(&sessions)?;
         ensure!(
@@ -146,6 +147,14 @@ impl CodingRun {
         }
         store.save_task(&task)?;
         app.tasks.push(task);
+        if planning {
+            app.view = crate::app::View::Tasks;
+            app.task_selection = Some(crate::app::TaskSelection {
+                task_id: id.clone(),
+                node_id: None,
+            });
+            app.review_version = None;
+        }
         if app.task_selection.is_none() {
             app.task_selection = Some(crate::app::TaskSelection {
                 task_id: id.clone(),
@@ -340,7 +349,9 @@ impl CodingRun {
                 let correction = self.corrections.join("\n\n");
                 self.corrections.clear();
                 app.queued_corrections = 0;
-                self.begin_node(index, &correction, app, store)?;
+                if let Err(error) = self.begin_node(index, &correction, app, store) {
+                    return self.fail_workflow(error, app, store);
+                }
             } else {
                 if app
                     .tasks
@@ -353,7 +364,9 @@ impl CodingRun {
                     self.waiting = true;
                     anyhow::bail!("仍有两个待审节点；请先明确批准节点，再继续");
                 }
-                self.start_next(app, store)?;
+                if let Err(error) = self.start_next(app, store) {
+                    return self.fail_workflow(error, app, store);
+                }
             }
             return Ok(());
         }
@@ -620,27 +633,35 @@ impl CodingRun {
 
     fn sync_state(&self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == self.id) {
+            let previous_state = task.state;
+            let mut dirty = task.checkpoint != self.checkpoint;
             task.state =
                 if matches!(self.phase, Phase::Planning) && app.run.status == RunStatus::Running {
                     TaskState::Planning
                 } else {
                     TaskState::from_run(&format!("{:?}", app.run.status))
                 };
+            dirty |= previous_state != task.state;
             task.checkpoint = self.checkpoint.clone();
             if let Phase::Node(index) = self.phase {
                 let node = &mut task.nodes[index];
                 if matches!(node.execution, Execution::Running | Execution::Paused) {
-                    node.execution = if app.run.status == RunStatus::Paused {
-                        Execution::Paused
-                    } else {
-                        Execution::Running
+                    let previous_execution = node.execution;
+                    node.execution = match app.run.status {
+                        RunStatus::Paused => Execution::Paused,
+                        RunStatus::Failed => Execution::Failed,
+                        RunStatus::Aborted => Execution::Cancelled,
+                        _ => Execution::Running,
                     };
+                    dirty |= previous_execution != node.execution;
                     if let Some(attempt) = node.attempts.last_mut() {
                         attempt.execution = node.execution;
                     }
                 }
             }
-            store.save_task(task)?;
+            if dirty {
+                store.save_task(task)?;
+            }
         }
         Ok(())
     }
@@ -724,15 +745,17 @@ impl CodingRun {
                 .or(task.baseline.as_deref())
                 .context("节点执行基线缺失")?,
         )?;
+        let task_context=task.plan.as_ref().map(|p|json!({"objective":p.objective,"constraints":p.constraints,"acceptance":p.acceptance}));
         let node = &mut task.nodes[index];
         let message = format!(
             "仅执行当前节点，不要开始其他节点。不要运行测试、合并或部署。原始需求：{}\n任务总体契约：{}\n当前节点契约：{}\n明确补充意见：{}\n只可在节点 scope 内实现，越界需要停止并说明。完成后总结实现及未验证验收条件，不得宣称用户已批准。",
             serde_json::to_string(&task.prompt)?,
-            serde_json::to_string(&task.plan)?,
+            serde_json::to_string(&task_context)?,
             serde_json::to_string(&node.contract)?,
             serde_json::to_string(extra)?
         );
         node.begin(&base.commit);
+        task.active_node_id = Some(node.contract.id.clone());
         task.state = TaskState::Running;
         store.save_task(task)?;
         self.node_base = Some(base);
@@ -790,9 +813,19 @@ impl CodingRun {
             self.closed = true;
             app.agent_connected = false;
         }
+        // Rework remains a full delivery of THIS node, not merely its latest patch.
+        // Actual attempt start is separately recorded; only the active/latest node
+        // can be reworked so downstream node changes cannot leak into this diff.
+        let review_base = app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
+            .attempts
+            .first()
+            .context("节点开始版本缺失")?
+            .base
+            .clone();
         let captured = self
             .repo
-            .capture_worktree_from(self.node_base.as_ref().context("节点开始版本缺失")?);
+            .resolve_snapshot(&review_base)
+            .and_then(|base| self.repo.capture_worktree_from(&base));
         let result = (|| -> Result<()> {
             let snapshot = captured?;
             let changes = self.repo.snapshot_changes(&snapshot)?;
@@ -838,9 +871,11 @@ impl CodingRun {
                 .find(|t| t.id == self.id)
                 .unwrap()
                 .nodes[index];
-            node.execution = Execution::Failed;
-            if let Some(attempt) = node.attempts.last_mut() {
-                attempt.execution = Execution::Failed;
+            if node.execution != Execution::Implemented {
+                node.execution = Execution::Failed;
+                if let Some(attempt) = node.attempts.last_mut() {
+                    attempt.execution = Execution::Failed;
+                }
             }
             self.fail_workflow(error, app, store)?;
         }

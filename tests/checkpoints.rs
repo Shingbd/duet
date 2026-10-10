@@ -16,6 +16,25 @@ fn git(path: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+#[test]
+fn node_checkpoint_can_delete_an_untracked_file_added_by_a_previous_node() {
+    let dir = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    let head = git(dir.path(), &["rev-parse", "HEAD"]);
+    let index = git(dir.path(), &["diff", "--cached"]);
+    fs::write(dir.path().join("new-node.txt"), "new content").unwrap();
+    let first = repo.capture(&["new-node.txt".into()]).unwrap();
+    fs::remove_file(dir.path().join("new-node.txt")).unwrap();
+    let second = repo.capture_worktree_from(&first).unwrap();
+    assert_eq!(second.parent.as_deref(), Some(first.commit.as_str()));
+    let changes = repo.snapshot_changes(&second).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "new-node.txt");
+    assert!(changes[0].deleted);
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(dir.path(), &["diff", "--cached"]), index);
+}
+
 fn fixture() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);

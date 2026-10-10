@@ -53,12 +53,22 @@ for line in sys.stdin.buffer:
   emit({'type':'message_start','message':{'role':'assistant'}})
   emit({'type':'message_end','message':{'role':'assistant','content':[{'type':'toolCall','name':'read'}]}})
   emit({'type':'message_end','message':{'role':'assistant','content':[]}})
+  if sys.argv[sys.argv.index('--tools')+1]=='read,grep,find,ls':
+   node={'id':'implementation','title':'Implement requirement','objective':'Implement initial task','scope':['main.rs','a.rs'],'boundaries':['only implement this node; preserve other behavior'],'implementation':'Edit the requested files','constraints':['no shell'],'dependencies':[],'acceptance':['review changes']}
+   plan={'schema_version':1,'objective':'initial task','constraints':['no merge'],'acceptance':['review changes'],'nodes':[node]}
+   emit({'type':'message_end','message':{'role':'assistant','content':[{'type':'text','text':json.dumps(plan)}]}})
+   active=False
+   emit({'type':'agent_settled','aborted':False})
+   continue
   if prompts==1:
    pathlib.Path('main.rs').write_text('draft')
    pathlib.Path('a.rs').write_text('added')
    text='initial plan'
   else:
-   assert r['message'] in ['correct the approach', 'explain the change']
+   message=r['message']
+   if '\\n明确补充意见：' in message:
+    message=json.loads(message.split('\\n明确补充意见：')[1].split('\\n只可')[0])
+   assert message in ['correct the approach', 'explain the change']
    pathlib.Path('main.rs').write_text('corrected')
    text='corrected result' if prompts==2 else 'follow-up answer'
   emit({'type':'message_end','message':{'role':'assistant','content':[{'type':'text','text':text}]}})

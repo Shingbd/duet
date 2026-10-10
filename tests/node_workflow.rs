@@ -54,7 +54,7 @@ for line in sys.stdin:
  elif r['type']=='prompt':
   response['data']={{'disposition':'started'}}; emit(response); emit({{'type':'agent_start'}})
   if planner:
-   nodes=[{{'id':'n'+str(i),'title':'node '+str(i),'objective':'implement '+str(i),'scope':['file'+str(i)+'.txt'],'implementation':'write the requested file','constraints':['no tests or merge'],'dependencies':[] if i==1 else ['n'+str(i-1)],'acceptance':['file content is correct']}} for i in range(1,count+1)]
+   nodes=[{{'id':'n'+str(i),'title':'node '+str(i),'objective':'implement '+str(i),'scope':['file'+str(i)+'.txt'],'boundaries':['only implement this node; preserve other behavior'],'implementation':'write the requested file','constraints':['no tests or merge'],'dependencies':[] if i==1 else ['n'+str(i-1)],'acceptance':['file content is correct']}} for i in range(1,count+1)]
    output=json.dumps({{'schema_version':1,'objective':'goal','constraints':['keep baseline'],'acceptance':['all files correct'],'nodes':nodes}}) if mode!='invalid' else 'not json'
   else:
    node=json.loads(r['message'].split('\n当前节点契约：')[1].split('\n明确补充意见：')[0])
@@ -227,4 +227,188 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
             .is_err()
     );
 }
+#[test]
+fn task_sidebar_contains_nodes_not_files_and_review_is_node_scoped() {
+    use duet_workbench::{
+        app::{Panel, TaskSelection},
+        keymap::Action,
+        ui,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    let (dir, fake, mut store, mut app) = setup(2, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "whole requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    let id = run.id.clone();
+    app.act(Action::Tasks);
+    app.panel = Panel::Queue;
+    for (width, height) in [(64, 20), (120, 32)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let sidebar = (4..height - 2)
+            .map(|y| (0..25).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sidebar.contains("node 1"));
+        assert!(sidebar.contains("node 2"));
+        assert!(!sidebar.contains("base.txt"));
+        assert!(!sidebar.contains("file1.txt"));
+    }
+    app.panel = Panel::Queue;
+    app.act(Action::Down);
+    assert_eq!(app.selected_node().unwrap().contract.id, "n1");
+    assert!(app.body().contains("实现方法"));
+    app.act(Action::Review);
+    assert_eq!(
+        app.changed_indices()
+            .iter()
+            .map(|&i| app.items[i].title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["file1.txt"]
+    );
+    let pinned = app.current().unwrap().version.clone();
+    app.act(Action::NextNode);
+    assert_eq!(app.selected_node().unwrap().contract.id, "n2");
+    assert!(app.body().contains("+n2"));
+    assert!(!app.body().contains("file1.txt"));
+    app.act(Action::PreviousNode);
+    assert_eq!(app.current().unwrap().version, pinned);
+    app.act(Action::Project);
+    assert_eq!(
+        app.visible_file_indices()
+            .iter()
+            .map(|&i| app.items[i].title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["base.txt"]
+    );
+    assert_eq!(app.current().unwrap().code, "baseline\n");
+    app.select_task_entry(TaskSelection {
+        task_id: id.clone(),
+        node_id: Some("n1".into()),
+    });
+    app.act(Action::Review);
+    app.current().unwrap();
+    store.save(&app).unwrap();
+    drop(run);
+    drop(store);
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    let mut restored = App::empty(Keymap::default());
+    store.restore(&mut restored).unwrap();
+    assert_eq!(
+        restored.task_selection.clone().unwrap(),
+        TaskSelection {
+            task_id: id,
+            node_id: Some("n1".into())
+        }
+    );
+    assert_eq!(restored.current().unwrap().version, pinned);
+}
+
+#[test]
+fn explicit_node_approval_is_confirmed_persisted_and_does_not_verify_or_merge() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use duet_workbench::{app::Mode, keymap::Action};
+    let (dir, fake, mut store, mut app) = setup(2, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "whole requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    app.act(Action::Review);
+    app.act(Action::MarkRead);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.selected_node().unwrap().review, Review::Pending);
+    let command = |app: &mut App| {
+        app.act(Action::Palette);
+        for c in "approve-node".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    };
+    command(&mut app);
+    assert!(matches!(app.mode, Mode::ConfirmNodeApproval { .. }));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.selected_node().unwrap().review, Review::Pending);
+    command(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.selected_node().unwrap().review, Review::Approved);
+    assert_eq!(
+        app.selected_node().unwrap().verification,
+        Verification::Unverified
+    );
+    assert!(app.node_evidence().unwrap().contains("已批准"));
+    store.save(&app).unwrap();
+    assert_eq!(store.tasks().unwrap()[0].nodes[0].review, Review::Approved);
+    assert!(!dir.path().join("file1.txt").exists());
+}
+
+#[test]
+fn node_rework_keeps_old_checkpoint_approval_and_pinned_reading_version() {
+    use duet_workbench::{
+        app::{Panel, TaskSelection},
+        keymap::Action,
+        nodes::Verification,
+    };
+    let (dir, fake, mut store, mut app) = setup(2, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "whole requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    app.select_task_entry(TaskSelection {
+        task_id: run.id.clone(),
+        node_id: Some("n2".into()),
+    });
+    app.act(Action::Review);
+    let old = app.current().unwrap().version.clone();
+    app.tasks[0].nodes[1].approve(&old).unwrap();
+    app.current().unwrap();
+    app.items[app.selected].scroll = 2;
+    app.panel = Panel::Reader;
+    run.interact(
+        RunControl::Say("refine implementation".into()),
+        &mut app,
+        &mut store,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert_eq!(app.current().unwrap().version, old);
+    assert_eq!(app.current().unwrap().scroll, 2);
+    let node = app.selected_node().unwrap();
+    assert_eq!(node.attempts.len(), 2);
+    assert_eq!(node.attempts[0].review, Review::Approved);
+    assert_eq!(node.review, Review::Pending);
+    assert_eq!(node.verification, Verification::Unverified);
+    assert_ne!(node.checkpoint(), Some(old.as_str()));
+    assert!(app.node_evidence().unwrap().contains("已批准"));
+    app.select_task_entry(TaskSelection {
+        task_id: run.id.clone(),
+        node_id: Some("n2".into()),
+    });
+    assert!(app.body().contains("+n2"));
+    assert!(!app.body().contains("file1.txt"));
+    assert!(app.node_evidence().unwrap().contains("待审"));
+}
+
 use duet_workbench::nodes::TaskState;

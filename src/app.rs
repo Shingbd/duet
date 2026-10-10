@@ -1,7 +1,7 @@
 use crate::{
     checkpoint::{ChangeKind, Repository, Snapshot},
     keymap::{Action, Keymap},
-    nodes::TaskRecord,
+    nodes::{Execution, NodeRecord, Review, TaskRecord, TaskState, Verification},
     rpc::{RunState, RunStatus},
     storage::Message,
 };
@@ -32,10 +32,22 @@ pub enum Page {
 pub enum Mode {
     Browse,
     Help,
-    Input { search: bool, text: String },
-    Message { text: String },
+    Input {
+        search: bool,
+        text: String,
+    },
+    Message {
+        text: String,
+    },
     ConfirmRead,
-    ConfirmCode { prompt: String },
+    ConfirmCode {
+        prompt: String,
+    },
+    ConfirmNodeApproval {
+        task_id: String,
+        node_id: String,
+        checkpoint: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +83,7 @@ pub struct App {
     pub name: String,
     pub content_revision: u64,
     pub branch: String,
+    pub project_version: Option<String>,
     pub latest_checkpoint: Option<String>,
     pub items: Vec<ReadingItem>,
     pub selected: usize,
@@ -88,15 +101,55 @@ pub struct App {
     pub cancel_requested: bool,
     pub history: Vec<Message>,
     pub task_scroll: u16,
+    pub task_evidence_scroll: u16,
     pub queued_corrections: usize,
     pub controls: Vec<RunControl>,
     pub task: Option<String>,
     pub tasks: Vec<TaskRecord>,
+    pub tasks_revision: u64,
     pub task_selection: Option<TaskSelection>,
+    pub review_version: Option<String>,
     pub requested_task: Option<String>,
     pub keymap: Keymap,
     pub quit: bool,
     pub notes: Vec<String>,
+}
+
+fn task_state_label(s: TaskState) -> &'static str {
+    match s {
+        TaskState::Planning => "拆分中",
+        TaskState::Running => "运行中",
+        TaskState::Paused => "已暂停",
+        TaskState::Implemented => "实现结束",
+        TaskState::Failed => "失败",
+        TaskState::Cancelled => "已取消",
+        TaskState::Interrupted => "已中断",
+    }
+}
+fn execution_label(s: Execution) -> &'static str {
+    match s {
+        Execution::Planned => "未开始",
+        Execution::Running => "执行中",
+        Execution::Paused => "已暂停",
+        Execution::Implemented => "实现完成",
+        Execution::Failed => "失败",
+        Execution::Cancelled => "已取消",
+        Execution::Interrupted => "已中断",
+    }
+}
+fn verification_label(s: Verification) -> &'static str {
+    match s {
+        Verification::Unverified => "未验证",
+        Verification::Passed => "通过",
+        Verification::Failed => "失败",
+    }
+}
+fn review_label(s: Review) -> &'static str {
+    match s {
+        Review::Pending => "待审",
+        Review::Approved => "已批准",
+        Review::ChangesRequested => "要求返工",
+    }
 }
 
 impl App {
@@ -105,6 +158,7 @@ impl App {
             name: "工作台".into(),
             content_revision: 0,
             branch: String::new(),
+            project_version: None,
             latest_checkpoint: None,
             items: Vec::new(),
             selected: 0,
@@ -122,11 +176,14 @@ impl App {
             cancel_requested: false,
             history: Vec::new(),
             task_scroll: 0,
+            task_evidence_scroll: 0,
             queued_corrections: 0,
             controls: Vec::new(),
             task: None,
             tasks: Vec::new(),
+            tasks_revision: 0,
             task_selection: None,
+            review_version: None,
             requested_task: None,
             keymap,
             quit: false,
@@ -144,6 +201,7 @@ impl App {
             .to_string_lossy()
             .into();
         app.branch = snapshot.commit[..12].into();
+        app.project_version = Some(snapshot.commit.clone());
         app.items = files
             .iter()
             .take(80)
@@ -268,10 +326,230 @@ impl App {
         Ok(())
     }
 
+    pub fn selected_task(&self) -> Option<&TaskRecord> {
+        self.task_selection
+            .as_ref()
+            .and_then(|s| self.tasks.iter().find(|t| t.id == s.task_id))
+            .or_else(|| self.tasks.last())
+    }
+    pub fn selected_node(&self) -> Option<&NodeRecord> {
+        let id = self.task_selection.as_ref()?.node_id.as_ref()?;
+        self.selected_task()?
+            .nodes
+            .iter()
+            .find(|n| &n.contract.id == id)
+    }
+    pub fn review_checkpoint(&self) -> Option<&str> {
+        if let Some(version) = &self.review_version {
+            return Some(version);
+        }
+        if let Some(node) = self.selected_node() {
+            return node.published_checkpoint();
+        }
+        self.selected_task()
+            .and_then(|t| t.checkpoint.as_deref())
+            .or(self.latest_checkpoint.as_deref())
+    }
+    pub fn task_rows(&self, review_only: bool) -> Vec<(TaskSelection, String)> {
+        let mut rows = Vec::new();
+        for task in self.tasks.iter().rev() {
+            let nodes: Vec<_> = task
+                .nodes
+                .iter()
+                .filter(|n| {
+                    !review_only
+                        || (n.published_checkpoint().is_some()
+                            && (n.review != Review::Approved
+                                || self.task_selection.as_ref().is_some_and(|s| {
+                                    s.task_id == task.id
+                                        && s.node_id.as_deref() == Some(&n.contract.id)
+                                })))
+                })
+                .collect();
+            if review_only && nodes.is_empty() && (task.plan.is_some() || task.checkpoint.is_none())
+            {
+                continue;
+            }
+            rows.push((
+                TaskSelection {
+                    task_id: task.id.clone(),
+                    node_id: None,
+                },
+                format!(
+                    "{} · {}",
+                    task.prompt.lines().next().unwrap_or("任务"),
+                    task_state_label(task.state)
+                ),
+            ));
+            for node in nodes {
+                let marker = if node.review == Review::Approved {
+                    "✓"
+                } else {
+                    match node.execution {
+                        Execution::Running => "◐",
+                        Execution::Implemented => "◇",
+                        Execution::Failed => "×",
+                        _ => "○",
+                    }
+                };
+                rows.push((
+                    TaskSelection {
+                        task_id: task.id.clone(),
+                        node_id: Some(node.contract.id.clone()),
+                    },
+                    format!(
+                        "  {marker} {} · {}",
+                        node.contract.title,
+                        execution_label(node.execution)
+                    ),
+                ));
+            }
+        }
+        rows
+    }
+    pub fn select_task_entry(&mut self, selection: TaskSelection) {
+        self.task_selection = Some(selection);
+        self.review_version = if let Some(node) = self.selected_node() {
+            node.published_checkpoint().map(str::to_owned)
+        } else {
+            self.selected_task().and_then(|t| t.checkpoint.clone())
+        };
+        if let Some(index) = self.changed_indices().first() {
+            self.selected = *index;
+        }
+        self.task_scroll = 0;
+        self.task_evidence_scroll = 0;
+        self.filter.clear();
+        self.content_revision = self.content_revision.wrapping_add(1);
+    }
+    fn move_task(&mut self, delta: isize) {
+        let rows = self.task_rows(false);
+        if rows.is_empty() {
+            return;
+        }
+        let index = rows
+            .iter()
+            .position(|(s, _)| Some(s) == self.task_selection.as_ref())
+            .map_or(0, |i| i.saturating_add_signed(delta).min(rows.len() - 1));
+        self.select_task_entry(rows[index].0.clone());
+    }
+    fn move_node(&mut self, delta: isize) {
+        let rows: Vec<_> = self
+            .task_rows(self.view == View::Review)
+            .into_iter()
+            .filter(|(s, _)| {
+                s.node_id.is_some()
+                    || self
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == s.task_id)
+                        .is_some_and(|t| t.nodes.is_empty())
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let index = rows
+            .iter()
+            .position(|(s, _)| Some(s) == self.task_selection.as_ref())
+            .map_or(0, |i| i.saturating_add_signed(delta).min(rows.len() - 1));
+        self.select_task_entry(rows[index].0.clone());
+    }
+    pub fn node_description(&self) -> Option<String> {
+        let node = self.selected_node()?;
+        let task = self.selected_task()?;
+        Some(format!(
+            "节点：{} [{}]\n状态：{} · 验收：{} · 审核：{}\n目标：{}\n文件范围：{}\n边界条件：{}\n实现方法：{}\n任务约束：{}\n节点约束：{}\n依赖：{}\n验收条件（未验证）：\n{}\n开始版本：{}\n完成版本：{}",
+            node.contract.title,
+            node.contract.id,
+            execution_label(node.execution),
+            verification_label(node.verification),
+            review_label(node.review),
+            node.contract.objective,
+            node.contract.scope.join("、"),
+            node.contract.boundaries.join("；"),
+            node.contract.implementation,
+            task.plan
+                .as_ref()
+                .map(|p| p.constraints.join("；"))
+                .unwrap_or_default(),
+            node.contract.constraints.join("；"),
+            node.contract.dependencies.join("、"),
+            node.contract
+                .acceptance
+                .iter()
+                .map(|c| format!("□ {c}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            node.attempts
+                .last()
+                .map(|a| a.base.as_str())
+                .unwrap_or("尚未执行"),
+            node.checkpoint().unwrap_or("尚未生成")
+        ))
+    }
+    pub fn node_evidence(&self) -> Option<String> {
+        let node = self.selected_node()?;
+        let version = self.review_checkpoint();
+        let attempt = node
+            .attempts
+            .iter()
+            .find(|a| a.checkpoint.as_deref() == version);
+        Some(format!(
+            "验收：{} · 人工审核：{}\n{}\n测试 Runner 未接入{}\n{}",
+            verification_label(attempt.map_or(node.verification, |a| a.verification)),
+            review_label(attempt.map_or(node.review, |a| a.review)),
+            node.contract
+                .acceptance
+                .iter()
+                .map(|c| format!("□ 未验证 · {c}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            attempt
+                .filter(|a| !a.scope_violations.is_empty())
+                .map(|a| format!("\n仓内越界：{}", a.scope_violations.join("、")))
+                .unwrap_or_default(),
+            if self.explain {
+                attempt.map(|a| a.summary.as_str()).unwrap_or("")
+            } else {
+                ""
+            }
+        ))
+    }
+    fn request_node_approval(&mut self) {
+        let Some(selection) = self.task_selection.clone() else {
+            self.status = "请先选择待审节点".into();
+            return;
+        };
+        let Some(node_id) = selection.node_id else {
+            self.status = "请先选择待审节点".into();
+            return;
+        };
+        let Some(node) = self.selected_node() else {
+            return;
+        };
+        let Some(checkpoint) = self.review_checkpoint() else {
+            self.status = "节点尚无检查点".into();
+            return;
+        };
+        if node.execution != Execution::Implemented || node.checkpoint() != Some(checkpoint) {
+            self.status = "只能批准当前已完成节点版本；旧版本或失败节点不能放行".into();
+            return;
+        }
+        self.mode = Mode::ConfirmNodeApproval {
+            task_id: selection.task_id,
+            node_id,
+            checkpoint: checkpoint.into(),
+        };
+    }
+
     pub fn current(&self) -> Option<&ReadingItem> {
         self.items.get(self.selected)
     }
     pub fn pending(&self) -> usize {
+        if self.tasks.iter().any(|t| !t.nodes.is_empty()) {
+            return self.tasks.iter().map(|t| t.pending_reviews()).sum();
+        }
         let changed = self.changed_indices();
         if changed.is_empty() {
             self.file_indices()
@@ -284,10 +562,13 @@ impl App {
     }
     pub fn file_indices(&self) -> Vec<usize> {
         let mut paths = std::collections::BTreeMap::new();
+        let version = if self.view == View::Review {
+            self.review_checkpoint()
+        } else {
+            self.latest_checkpoint.as_deref()
+        };
         for (index, item) in self.items.iter().enumerate() {
-            if item.change.is_none()
-                || self.latest_checkpoint.as_deref() == Some(item.version.as_str())
-            {
+            if item.change.is_none() || version == Some(item.version.as_str()) {
                 paths.insert(item.title.as_str(), index);
             }
         }
@@ -301,7 +582,7 @@ impl App {
             .into_iter()
             .filter(|&i| {
                 self.items[i].change.is_some()
-                    && self.latest_checkpoint.as_deref() == Some(self.items[i].version.as_str())
+                    && self.review_checkpoint() == Some(self.items[i].version.as_str())
             })
             .collect()
     }
@@ -309,11 +590,38 @@ impl App {
     pub fn visible_file_indices(&self) -> Vec<usize> {
         if self.view == View::Review {
             self.changed_indices()
+        } else if self.view == View::Project {
+            let mut paths = std::collections::BTreeMap::new();
+            for (i, item) in self.items.iter().enumerate() {
+                if self.project_version.as_deref() == Some(&item.version)
+                    || (self.project_version.is_none() && item.change.is_none())
+                {
+                    paths.insert(&item.title, i);
+                }
+            }
+            paths.into_values().collect()
         } else {
             self.file_indices()
         }
     }
     fn open_review(&mut self) {
+        if self
+            .task_selection
+            .as_ref()
+            .is_none_or(|s| s.node_id.is_none())
+            && let Some(task) = self.selected_task()
+            && let Some(node) = task.nodes.iter().find(|n| n.pending_review()).or_else(|| {
+                task.nodes
+                    .iter()
+                    .find(|n| n.published_checkpoint().is_some())
+            })
+        {
+            self.select_task_entry(TaskSelection {
+                task_id: task.id.clone(),
+                node_id: Some(node.contract.id.clone()),
+            });
+        }
+        self.view = View::Review;
         if let Some(index) = self.changed_indices().first() {
             self.selected = *index;
         }
@@ -410,6 +718,31 @@ impl App {
                 }
                 return;
             }
+            Mode::ConfirmNodeApproval {
+                task_id,
+                node_id,
+                checkpoint,
+            } => {
+                if key.code == KeyCode::Enter {
+                    let result = self
+                        .tasks
+                        .iter_mut()
+                        .find(|t| &t.id == task_id)
+                        .and_then(|t| t.nodes.iter_mut().find(|n| &n.contract.id == node_id))
+                        .ok_or_else(|| anyhow::anyhow!("节点已不存在"))
+                        .and_then(|n| n.approve(checkpoint));
+                    self.status = match result {
+                        Ok(()) => "已明确批准该节点版本 · 验收仍未验证，未合并".into(),
+                        Err(e) => format!("批准未完成：{e}"),
+                    };
+                    self.mode = Mode::Browse;
+                    self.content_revision = self.content_revision.wrapping_add(1);
+                    self.tasks_revision = self.tasks_revision.wrapping_add(1);
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
             Mode::ConfirmRead => {
                 if key.code == KeyCode::Enter {
                     if let Some(item) = self.items.get_mut(self.selected) {
@@ -441,7 +774,18 @@ impl App {
         match action {
             Action::Tasks => self.view = View::Tasks,
             Action::Review => self.open_review(),
-            Action::Project => self.view = View::Project,
+            Action::Project => {
+                let path = self.current().map(|i| i.title.clone());
+                self.view = View::Project;
+                let indices = self.visible_file_indices();
+                if let Some(&index) = indices
+                    .iter()
+                    .find(|&&i| Some(&self.items[i].title) == path.as_ref())
+                    .or_else(|| indices.first())
+                {
+                    self.selected = index;
+                }
+            }
             Action::Knowledge => self.view = View::Knowledge,
             Action::NextPanel | Action::PreviousPanel => {
                 self.fullscreen = false;
@@ -456,12 +800,22 @@ impl App {
             }
             Action::Up | Action::Down => {
                 if self.panel == Panel::Queue {
-                    self.move_item(if action == Action::Up { -1 } else { 1 });
-                } else if self.panel == Panel::Reader && self.view == View::Tasks {
-                    self.task_scroll = if action == Action::Up {
-                        self.task_scroll.saturating_sub(1)
+                    let delta = if action == Action::Up { -1 } else { 1 };
+                    if self.view == View::Tasks {
+                        self.move_task(delta);
                     } else {
-                        self.task_scroll.saturating_add(1)
+                        self.move_item(delta);
+                    }
+                } else if self.view == View::Tasks {
+                    let scroll = if self.panel == Panel::Reader {
+                        &mut self.task_scroll
+                    } else {
+                        &mut self.task_evidence_scroll
+                    };
+                    *scroll = if action == Action::Up {
+                        scroll.saturating_sub(1)
+                    } else {
+                        scroll.saturating_add(1)
                     };
                 } else if let Some(item) = self.items.get_mut(self.selected) {
                     let scroll = if self.panel == Panel::Reader {
@@ -476,8 +830,12 @@ impl App {
                     };
                 }
             }
+            Action::PreviousItem if self.view == View::Tasks => self.move_task(-1),
+            Action::NextItem if self.view == View::Tasks => self.move_task(1),
             Action::PreviousItem => self.move_review_item(-1),
             Action::NextItem => self.move_review_item(1),
+            Action::PreviousNode => self.move_node(-1),
+            Action::NextNode => self.move_node(1),
             Action::Open => {
                 self.panel = Panel::Reader;
                 if self.view == View::Tasks {
@@ -514,6 +872,9 @@ impl App {
                 }
             }
             Action::Theme => self.light = !self.light,
+            Action::MarkRead if self.view == View::Tasks => {
+                self.status = "请在审核视图标记文件已读；节点批准使用 :approve-node".into()
+            }
             Action::MarkRead => {
                 if self.current().is_some() {
                     self.mode = Mode::ConfirmRead;
@@ -540,8 +901,8 @@ impl App {
         let position = indices
             .iter()
             .position(|&i| Some(self.items[i].title.as_str()) == path)
-            .unwrap_or(0);
-        self.selected = indices[position.saturating_add_signed(delta).min(indices.len() - 1)];
+            .map_or(0, |i| i.saturating_add_signed(delta).min(indices.len() - 1));
+        self.selected = indices[position];
         self.filter.clear();
     }
     fn move_item(&mut self, delta: isize) {
@@ -558,10 +919,11 @@ impl App {
             "theme" => self.light = !self.light,
             "review" => self.open_review(),
             "changes" => self.open_review(),
-            "tasks" => self.view = View::Tasks,
-            "project" => self.view = View::Project,
+            "tasks" => self.act(Action::Tasks),
+            "project" => self.act(Action::Project),
             "knowledge" => self.view = View::Knowledge,
             "read" => self.act(Action::MarkRead),
+            "approve-node" => self.request_node_approval(),
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,
@@ -599,6 +961,44 @@ impl App {
 
     /// Semantic role tags, not guesses based on message text.
     pub fn task_lines(&self) -> Vec<(String, i8)> {
+        if let Some(description) = self.node_description() {
+            return description.lines().map(|l| (l.to_owned(), 2)).collect();
+        }
+        if let Some(selected) = self.selected_task()
+            && self.tasks.last().is_some_and(|live| live.id != selected.id)
+        {
+            let mut lines = vec![
+                (format!("任务：{}", selected.prompt), 2),
+                (format!("状态：{}", task_state_label(selected.state)), 2),
+                (String::new(), 0),
+            ];
+            for m in selected
+                .history
+                .iter()
+                .filter(|m| !m.content.trim().is_empty())
+            {
+                let (label, role) = if m.role == "user" {
+                    ("你", 3)
+                } else if m.role == "assistant" {
+                    ("AI", 4)
+                } else {
+                    ("系统", 2)
+                };
+                lines.push((
+                    format!("┌─ {label}"),
+                    if role == 3 {
+                        7
+                    } else if role == 4 {
+                        8
+                    } else {
+                        2
+                    },
+                ));
+                lines.extend(m.content.lines().map(|l| (format!("│ {l}"), role)));
+                lines.push((String::new(), 0));
+            }
+            return lines;
+        }
         let Some(task) = &self.task else {
             return vec![("暂无任务".into(), 2)];
         };
@@ -682,6 +1082,17 @@ impl App {
                 }
             }
             View::Review => {
+                if self.selected_node().is_some() {
+                    if self.page == Page::Intent {
+                        return self.node_description().unwrap();
+                    }
+                    if self.page == Page::Evidence {
+                        return self.node_evidence().unwrap();
+                    }
+                    if !self.changed_indices().contains(&self.selected) {
+                        return "该节点当前没有可显示的文件变更".into();
+                    }
+                }
                 let Some(item) = self.current() else {
                     return "暂无内容".into();
                 };

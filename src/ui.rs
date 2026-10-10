@@ -189,6 +189,7 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                 format!(
                     " 焦点：{} · {}",
                     match app.panel {
+                        Panel::Queue if app.view == View::Tasks => "任务 / 节点",
                         Panel::Queue => "文件列表",
                         Panel::Reader => "内容",
                         Panel::Evidence => "说明 / 验证",
@@ -284,11 +285,31 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             64,
             7,
         ),
+        Mode::ConfirmNodeApproval { checkpoint, .. } => popup(
+            frame,
+            theme,
+            " 明确批准节点版本 ",
+            vec![
+                Line::from("验收仍未验证。此操作不会运行测试或合并代码。"),
+                Line::from(safe_text(checkpoint)),
+                Line::from("Enter 批准该版本 · Esc 返回"),
+            ],
+            76,
+            7,
+        ),
         Mode::Browse => {}
     }
 }
 
 fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    if app.view == View::Tasks {
+        task_tree(frame, app, area, theme);
+        return;
+    }
+    if app.view == View::Review && !app.task_rows(true).is_empty() {
+        review_tree(frame, app, area, theme);
+        return;
+    }
     let indices = app.visible_file_indices();
     let selected_path = app.current().map(|item| item.title.as_str());
     let selected_row = indices
@@ -346,8 +367,117 @@ fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     );
 }
 
+fn task_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    let rows = app.task_rows(false);
+    let selected = rows
+        .iter()
+        .position(|(s, _)| Some(s) == app.task_selection.as_ref())
+        .unwrap_or(0);
+    let height = area.height.saturating_sub(2) as usize;
+    let start = selected.saturating_sub(height.saturating_sub(1));
+    let items: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(height)
+        .map(|(i, (s, label))| {
+            let color = if s.node_id.is_some() {
+                theme.accent
+            } else {
+                theme.text
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!(
+                    "{} {}",
+                    if Some(s) == app.task_selection.as_ref() {
+                        "›"
+                    } else {
+                        " "
+                    },
+                    safe_text(label)
+                ),
+                if i == selected {
+                    Style::default().fg(color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(color)
+                },
+            )))
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items).block(theme.block(" 任务 · 节点 ", app.panel == Panel::Queue)),
+        area,
+    );
+}
+
+fn review_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    let rows = app.task_rows(true);
+    let indices = app.changed_indices();
+    let mut items = Vec::new();
+    let mut selected = 0;
+    for (selection, label) in rows {
+        let chosen = Some(&selection) == app.task_selection.as_ref();
+        if chosen {
+            selected = items.len();
+        }
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("{} {}", if chosen { "›" } else { " " }, safe_text(&label)),
+            Style::default().fg(if chosen { theme.accent } else { theme.muted }),
+        ))));
+        if chosen {
+            for &index in &indices {
+                let item = &app.items[index];
+                let color = match item.change {
+                    Some(crate::checkpoint::ChangeKind::Added) => theme.good,
+                    Some(crate::checkpoint::ChangeKind::Deleted) => theme.removed,
+                    _ => theme.warning,
+                };
+                if index == app.selected {
+                    selected = items.len();
+                }
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!(
+                        "{} {} {} {}",
+                        if index == app.selected { "›" } else { " " },
+                        match item.change {
+                            Some(crate::checkpoint::ChangeKind::Added) => "A",
+                            Some(crate::checkpoint::ChangeKind::Deleted) => "D",
+                            _ => "M",
+                        },
+                        if item.read { "✓" } else { "○" },
+                        safe_text(&item.title)
+                    ),
+                    Style::default().fg(color),
+                ))));
+            }
+        }
+    }
+    let height = area.height.saturating_sub(2) as usize;
+    let start = selected.saturating_sub(height.saturating_sub(1));
+    frame.render_widget(
+        List::new(
+            items
+                .into_iter()
+                .skip(start)
+                .take(height)
+                .collect::<Vec<_>>(),
+        )
+        .block(theme.block(
+            format!(
+                " 待审节点 · {} / {} ",
+                app.keymap.hint(Action::PreviousNode),
+                app.keymap.hint(Action::NextNode)
+            ),
+            app.panel == Panel::Queue,
+        )),
+        area,
+    );
+}
+
 #[derive(PartialEq, Eq)]
 struct ReaderKey {
+    node_evidence: Option<String>,
+    scope: Option<String>,
     width: u16,
     selected: usize,
     view: View,
@@ -366,6 +496,16 @@ struct ReaderCache {
 impl ReaderCache {
     fn prepare(&mut self, app: &App, width: u16) {
         let key = ReaderKey {
+            node_evidence: if app.view == View::Review && app.page == Page::Evidence {
+                app.node_evidence()
+            } else {
+                None
+            },
+            scope: if app.view == View::Review {
+                app.review_checkpoint().map(str::to_owned)
+            } else {
+                None
+            },
             width,
             is_diff: app.view == View::Review
                 && app.current().is_some_and(|item| item.change.is_some()),
@@ -501,7 +641,12 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
             format!(
                     " {} ",
                     match app.view {
-                        View::Tasks => "任务详情".to_owned(),
+                        View::Tasks =>
+                            if app.selected_node().is_some() {
+                                "节点契约".to_owned()
+                            } else {
+                                "任务对话".to_owned()
+                            },
                         View::Knowledge => "笔记".to_owned(),
                         View::Project => "项目".to_owned(),
                         View::Review => app
@@ -518,18 +663,39 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
 
 fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     let text = app
-        .current()
-        .map(|item| {
-            let mut parts = Vec::new();
-            if app.explain && !item.explanation.is_empty() {
-                parts.push(item.explanation.as_str());
+        .node_evidence()
+        .or_else(|| {
+            if app.view == View::Tasks {
+                return Some(
+                    app.selected_task()
+                        .and_then(|t| t.plan.as_ref())
+                        .map(|p| {
+                            format!(
+                                "总体目标：{}\n约束：{}\n验收（未验证）：\n{}",
+                                p.objective,
+                                p.constraints.join("；"),
+                                p.acceptance.join("\n")
+                            )
+                        })
+                        .unwrap_or_else(|| "暂无节点契约".into()),
+                );
             }
-            if !item.evidence.is_empty() {
-                parts.push(item.evidence.as_str());
-            }
-            parts.join("\n\n")
+            None
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            app.current()
+                .map(|item| {
+                    let mut parts = Vec::new();
+                    if app.explain && !item.explanation.is_empty() {
+                        parts.push(item.explanation.as_str());
+                    }
+                    if !item.evidence.is_empty() {
+                        parts.push(item.evidence.as_str());
+                    }
+                    parts.join("\n\n")
+                })
+                .unwrap_or_default()
+        });
     let text = if text.is_empty() {
         "暂无记录".to_owned()
     } else {
@@ -540,7 +706,14 @@ fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             .block(theme.block(" 说明 / 验证 ", app.panel == Panel::Evidence))
             .style(Style::default().fg(theme.muted))
             .wrap(Wrap { trim: false })
-            .scroll((app.current().map_or(0, |item| item.evidence_scroll), 0)),
+            .scroll((
+                if app.view == View::Tasks {
+                    app.task_evidence_scroll
+                } else {
+                    app.current().map_or(0, |item| item.evidence_scroll)
+                },
+                0,
+            )),
         area,
     );
 }
