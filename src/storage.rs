@@ -186,6 +186,7 @@ impl WorkspaceStore {
                 |row| row.get(0),
             )
             .optional()?;
+        let mut saved_selection = None;
         if let Some(saved) = saved {
             let saved: SavedUi =
                 serde_json::from_str(&saved).context("工作台状态损坏，未覆盖原数据")?;
@@ -195,24 +196,17 @@ impl WorkspaceStore {
             app.page = saved.page;
             app.notes = saved.notes;
             app.task_scroll = saved.task_scroll;
-            if let Some((version, title)) = saved.selected
-                && let Some(index) = app
-                    .items
-                    .iter()
-                    .position(|i| i.version == version && i.title == title)
-            {
-                app.selected = index;
-            }
+            saved_selection = saved.selected;
         }
-        let latest: Option<(String, String, String)> = self
+        let latest: Option<(String, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT prompt,session,status FROM runs ORDER BY created_at DESC,id DESC LIMIT 1",
+                "SELECT prompt,session,status,checkpoint FROM runs ORDER BY created_at DESC,id DESC LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        if let Some((prompt, session, status)) = latest {
+        if let Some((prompt, session, status, checkpoint)) = latest {
             app.task = Some(prompt);
             app.history = self
                 .history(&session)?
@@ -228,6 +222,26 @@ impl WorkspaceStore {
                 "Aborted" | "Interrupted" => crate::rpc::RunStatus::Aborted,
                 _ => crate::rpc::RunStatus::Idle,
             };
+            if let Some(checkpoint) = checkpoint {
+                let restored = (|| -> Result<()> {
+                    let project = self.directory.parent().context("项目目录无效")?;
+                    let repo = crate::checkpoint::Repository::open(project)?;
+                    let snapshot = repo.resolve_snapshot(&checkpoint)?;
+                    app.append_checkpoint(&repo, &snapshot)
+                })();
+                if let Err(error) = restored {
+                    app.status = format!("对话已恢复，但审核快照无法恢复：{error}");
+                }
+            }
+        }
+        // Delivery items must exist before restoring their selection/reading positions.
+        if let Some((version, title)) = saved_selection
+            && let Some(index) = app
+                .items
+                .iter()
+                .position(|item| item.version == version && item.title == title)
+        {
+            app.selected = index;
         }
         for item in &mut app.items {
             let state: Option<(bool, u16, u16)> = self.connection.query_row(

@@ -16,6 +16,12 @@ pub struct Snapshot {
     pub reference: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub deleted: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Repository {
     root: PathBuf,
@@ -127,6 +133,37 @@ impl Repository {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect())
+    }
+
+    /// Read change membership from immutable commits, never the current worktree.
+    pub fn snapshot_changes(&self, snapshot: &Snapshot) -> Result<Vec<FileChange>> {
+        let Some(parent) = &snapshot.parent else {
+            return Ok(Vec::new());
+        };
+        let output = self.git(
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--name-status",
+                "-z",
+                parent,
+                &snapshot.commit,
+                "--",
+            ],
+            None,
+        )?;
+        let mut fields = output.split('\0').filter(|field| !field.is_empty());
+        let mut changes = Vec::new();
+        while let Some(status) = fields.next() {
+            let path = fields.next().context("Git 变更列表不完整")?;
+            changes.push(FileChange {
+                path: path.into(),
+                deleted: status == "D",
+            });
+        }
+        Ok(changes)
     }
 
     pub fn read(&self, snapshot: &Snapshot, path: &str) -> Result<String> {

@@ -168,6 +168,69 @@ impl App {
         Ok(app)
     }
 
+    /// Append all changed files (not subject to the baseline's 80-file preview cap).
+    /// Titles distinguish task artifacts from baseline files; every read uses its commit.
+    pub fn append_checkpoint(&mut self, repo: &Repository, snapshot: &Snapshot) -> Result<()> {
+        let changes = repo.snapshot_changes(snapshot)?;
+        let summary = self
+            .history
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let mut delivery = vec![ReadingItem {
+            title: "变更".into(),
+            version: snapshot.commit.clone(),
+            intent: self.task.clone().unwrap_or_default(),
+            code: repo.diff(snapshot)?,
+            evidence: "测试未运行".into(),
+            explanation: summary,
+            read: false,
+            scroll: 0,
+            evidence_scroll: 0,
+        }];
+        for change in changes {
+            let title = format!(
+                "待审 · {}{}",
+                change.path,
+                if change.deleted {
+                    "（已删除）"
+                } else {
+                    ""
+                }
+            );
+            let code = if change.deleted {
+                "该文件在此检查点已删除；请查看整体变更 diff。".into()
+            } else {
+                repo.read(snapshot, &change.path)
+                    .unwrap_or_else(|error| format!("无法打开固定版本文件：{error}"))
+            };
+            delivery.push(ReadingItem {
+                title,
+                version: snapshot.commit.clone(),
+                intent: self.task.clone().unwrap_or_default(),
+                code,
+                evidence: "测试未运行".into(),
+                explanation: String::new(),
+                read: false,
+                scroll: 0,
+                evidence_scroll: 0,
+            });
+        }
+        for item in delivery {
+            if !self
+                .items
+                .iter()
+                .any(|old| old.version == item.version && old.title == item.title)
+            {
+                self.items.push(item);
+            }
+        }
+        self.content_revision = self.content_revision.wrapping_add(1);
+        Ok(())
+    }
+
     pub fn current(&self) -> Option<&ReadingItem> {
         self.items.get(self.selected)
     }
@@ -398,6 +461,18 @@ impl App {
             "help" => self.mode = Mode::Help,
             "theme" => self.light = !self.light,
             "review" => self.view = View::Review,
+            "changes" => {
+                if let Some(index) = self.items.iter().rposition(|item| item.title == "变更") {
+                    self.selected = index;
+                    self.view = View::Review;
+                    self.panel = Panel::Reader;
+                    self.page = Page::Code;
+                    self.filter.clear();
+                    self.status = "固定版本待审变更 · [ / ] 逐文件查看".into();
+                } else {
+                    self.status = "当前没有已保存的审核检查点".into();
+                }
+            }
             "tasks" => self.view = View::Tasks,
             "project" => self.view = View::Project,
             "knowledge" => self.view = View::Knowledge,

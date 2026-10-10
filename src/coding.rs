@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, ReadingItem, RunControl},
+    app::{App, RunControl},
     checkpoint::Repository,
     rpc::{PiClient, RunStatus, message_text},
     storage::{Message, WorkspaceStore},
@@ -443,23 +443,7 @@ impl CodingRun {
         self.checkpoint = None;
         if !paths.is_empty() {
             let snapshot = self.repo.capture(&paths)?;
-            app.items.push(ReadingItem {
-                title: "变更".into(),
-                version: snapshot.commit.clone(),
-                intent: app.task.clone().unwrap_or_default(),
-                code: self.repo.diff(&snapshot)?,
-                evidence: "测试未运行".into(),
-                explanation: app
-                    .history
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == "assistant")
-                    .map(|m| m.content.clone())
-                    .unwrap_or_default(),
-                read: false,
-                scroll: 0,
-                evidence_scroll: 0,
-            });
+            app.append_checkpoint(&self.repo, &snapshot)?;
             self.checkpoint = Some(snapshot.commit);
             app.status = "本轮改动待审 · 测试未运行 · i 可继续追问".into();
         } else {

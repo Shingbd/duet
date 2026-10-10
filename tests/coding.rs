@@ -81,7 +81,19 @@ for line in sys.stdin.buffer:
     );
     assert!(run.checkpoint.is_some());
     assert_eq!(app.selected, 0);
-    assert!(app.items.last().unwrap().code.contains("+agent changed"));
+    assert!(
+        app.items
+            .iter()
+            .find(|item| item.title == "变更")
+            .unwrap()
+            .code
+            .contains("+agent changed")
+    );
+    assert!(
+        app.items
+            .iter()
+            .any(|item| item.title == "待审 · main.rs" && item.code == "agent changed")
+    );
     assert_eq!(store.history(&run.session).unwrap().len(), 2);
     store.save(&app).unwrap();
     drop(run);

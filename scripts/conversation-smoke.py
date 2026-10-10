@@ -122,7 +122,26 @@ for line in sys.stdin.buffer:
         send(b'q')
         assert process.wait(timeout=3) == 0
         assert termios.tcgetattr(slave) == before
-        print('PTY chat passed: roles, empty filtering, pause, correction, resume, follow-up, terminal restoration')
+        # Reopen: the task chat AND its immutable delivery files must be available.
+        process = subprocess.Popen([str(binary), 'open', str(project)],
+                                   stdin=slave, stdout=slave, stderr=slave,
+                                   env={**os.environ, 'TERM': 'xterm-256color'})
+        drain(0.5)
+        send(b':changes\r')
+        drain(0.4)
+        with sqlite3.connect(database) as db:
+            saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
+        assert saved['selected'][1] == '变更', saved
+        send(b']')
+        drain(0.4)
+        with sqlite3.connect(database) as db:
+            saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])
+            checkpoint = db.execute('SELECT checkpoint FROM runs').fetchone()[0]
+        assert saved['selected'] == [checkpoint, '待审 · main.rs'], saved
+        send(b'q')
+        assert process.wait(timeout=3) == 0
+        assert termios.tcgetattr(slave) == before
+        print('PTY chat passed: roles, empty filtering, pause, correction, resume, follow-up, delivery restart, terminal restoration')
     finally:
         if process.poll() is None:
             process.kill()
