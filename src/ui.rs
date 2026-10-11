@@ -1,6 +1,7 @@
 use crate::{
     app::{App, Mode, Page, Panel, View},
     keymap::Action,
+    markdown::{Context as MarkdownContext, InlineStyle, Role, SemanticLine, Status},
 };
 use ratatui::{
     Frame,
@@ -49,6 +50,47 @@ impl Theme {
             }
         }
     }
+    fn markdown_style(&self, context: MarkdownContext, inline: InlineStyle) -> Style {
+        // Outer role, actual contract status, and Markdown are independent axes.
+        // Role/status labels remain the caller's responsibility; document task
+        // markers deliberately do not affect the status palette.
+        let role_color = match context.role {
+            Role::Body => self.text,
+            Role::User | Role::Acceptance => self.good,
+            Role::Assistant | Role::Field => self.accent,
+            Role::System => self.muted,
+            Role::Constraint => self.warning,
+        };
+        let color = match context.status {
+            Status::None => role_color,
+            Status::Pending => self.warning,
+            Status::Success => self.good,
+            Status::Failure => self.removed,
+        };
+        let mut style = Style::default().fg(color);
+        if context.status != Status::None {
+            style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        }
+        if inline.quote && context.role == Role::Body && context.status == Status::None {
+            style = style.fg(self.muted);
+        }
+        if inline.marker && context.status == Status::None {
+            style = style.fg(self.muted);
+        }
+        if inline.heading > 0 {
+            style = style.fg(self.accent).add_modifier(Modifier::BOLD);
+        }
+        if inline.strong { style = style.add_modifier(Modifier::BOLD); }
+        if inline.emphasis { style = style.add_modifier(Modifier::ITALIC); }
+        if inline.strike { style = style.add_modifier(Modifier::CROSSED_OUT); }
+        if inline.link {
+            style = style.fg(self.accent).add_modifier(Modifier::UNDERLINED);
+        }
+        if inline.code {
+            style = style.fg(self.warning).bg(self.bg);
+        }
+        style
+    }
     fn block<'a>(&self, title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
         Block::default()
             .borders(Borders::ALL)
@@ -56,6 +98,21 @@ impl Theme {
             .title(title)
             .border_style(Style::default().fg(if focused { self.accent } else { self.border }))
     }
+}
+
+/// Final theme mapping for the display-only Markdown pipeline. This does not
+/// reinterpret literal code/diffs or change existing readers. Callers retain
+/// explicit chat-role and real-status labels alongside the returned lines.
+pub fn style_markdown(lines: &[SemanticLine], light: bool) -> Vec<Line<'static>> {
+    let theme = Theme::new(light);
+    lines.iter().map(|line| {
+        Line::from(line.fragments.iter().map(|fragment| {
+            Span::styled(
+                safe_text(&fragment.text).replace('\n', " "),
+                theme.markdown_style(line.context, fragment.style),
+            )
+        }).collect::<Vec<_>>())
+    }).collect()
 }
 
 #[derive(Default)]
@@ -876,6 +933,53 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
+}
+
+#[cfg(test)]
+mod markdown_tests {
+    use super::*;
+    use crate::markdown::{Fragment, render};
+
+    #[test]
+    fn theme_mapping_preserves_inline_modifiers_and_role_colors() {
+        for light in [false, true] {
+            let theme = Theme::new(light);
+            let context = MarkdownContext { role: Role::Assistant, status: Status::None };
+            let semantic = render("**bold** *italic* ~~strike~~ [link](url) `code`", 80, context);
+            let styled = style_markdown(&semantic, light);
+            let spans: Vec<_> = styled.iter().flat_map(|l| &l.spans).collect();
+            assert!(spans.iter().any(|s| s.style.add_modifier.contains(Modifier::BOLD)));
+            assert!(spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC)));
+            assert!(spans.iter().any(|s| s.style.add_modifier.contains(Modifier::CROSSED_OUT)));
+            assert!(spans.iter().any(|s| s.style.add_modifier.contains(Modifier::UNDERLINED)));
+            assert!(spans.iter().any(|s| s.content == "bold" && s.style.fg == Some(theme.accent)));
+            assert_eq!(semantic.iter().map(SemanticLine::text).collect::<Vec<_>>(),
+                styled.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn source_checkbox_is_not_application_success() {
+        for light in [false, true] {
+            let semantic = render("- [x] document only", 80, MarkdownContext::default());
+            assert!(semantic.iter().all(|l| l.context.status == Status::None));
+            let theme = Theme::new(light);
+            let style = theme.markdown_style(MarkdownContext { role: Role::Body, status: Status::Success }, InlineStyle::default());
+            assert!(style.add_modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
+            let mapped = style_markdown(&semantic, light);
+            assert!(!mapped.iter().flat_map(|l| &l.spans).any(|s| s.style.fg == Some(theme.good)));
+        }
+    }
+
+    #[test]
+    fn final_theme_boundary_sanitizes_fragments() {
+        let lines = [SemanticLine {
+            fragments: vec![Fragment { text: "\x1b[2J\u{009b}".into(), style: InlineStyle::default() }],
+            context: MarkdownContext::default(),
+        }];
+        let mapped = style_markdown(&lines, false);
+        assert!(mapped[0].spans[0].content.chars().all(|c| !c.is_control()));
+    }
 }
 
 fn popup(frame: &mut Frame, theme: Theme, title: &str, lines: Vec<Line>, width: u16, height: u16) {

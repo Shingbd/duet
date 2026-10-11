@@ -3,6 +3,7 @@ pub mod checkpoint;
 pub mod coding;
 pub mod keymap;
 pub mod merge;
+pub mod markdown;
 pub mod nodes;
 pub mod rpc;
 pub mod storage;
