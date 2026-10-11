@@ -193,10 +193,11 @@ impl CodingRun {
         } else {
             let task = app.tasks.iter_mut().find(|t| t.id == id).unwrap();
             let order = task.plan.as_ref().context("计划缺失")?.order()?;
+            let resume = task.resume_index()?;
             let first = order
                 .iter()
-                .position(|&i| task.nodes[i].execution != Execution::Implemented)
-                .context("没有可执行节点")?;
+                .position(|&i| i == resume)
+                .context("续跑节点不在计划中")?;
             ensure!(
                 order[first + 1..].iter().all(|&i| task.nodes[i]
                     .attempts

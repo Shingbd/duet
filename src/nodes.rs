@@ -488,6 +488,16 @@ impl TaskRecord {
         ensure!(self.pending_reviews() < 2, "仍有两个待审节点，请先明确批准");
         Ok(())
     }
+    /// The same dependency-order resume point used by execution and confirmation UI.
+    pub fn resume_index(&self) -> Result<usize> {
+        self.plan
+            .as_ref()
+            .context("计划缺失")?
+            .order()?
+            .into_iter()
+            .find(|&i| self.nodes[i].execution != Execution::Implemented)
+            .context("没有未完成节点")
+    }
     pub fn next_ready(&self) -> Option<usize> {
         self.nodes.iter().position(|n| {
             n.execution == Execution::Planned

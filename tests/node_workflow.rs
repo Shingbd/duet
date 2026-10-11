@@ -248,6 +248,11 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
         node.approve(&cp).unwrap();
     }
     assert!(app.tasks[0].startable().is_ok());
+    assert_eq!(app.tasks[0].resume_index().unwrap(), 2);
+    let prior_attempts = app.tasks[0].nodes[..2]
+        .iter()
+        .map(|n| n.attempts.len())
+        .collect::<Vec<_>>();
     app.act(duet_workbench::keymap::Action::Tasks);
     app.act(duet_workbench::keymap::Action::StartTask);
     assert!(matches!(
@@ -255,6 +260,21 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
         duet_workbench::app::Mode::ConfirmStart { .. }
     ));
     assert!(app.requested_start.is_none());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+    terminal
+        .draw(|f| duet_workbench::ui::draw(f, &app))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    let rendered = rendered.replace(' ', "");
+    assert!(rendered.contains("从n3"));
+    assert!(rendered.contains("跳过2"));
+    assert!(rendered.contains("[已实现·跳过]n1"));
     assert!(!run.worktree.join("file3.txt").exists());
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
@@ -280,6 +300,13 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
     assert_eq!(app.tasks[0].nodes[0].review, Review::Approved);
     assert_eq!(app.tasks[0].nodes[1].review, Review::Approved);
     assert_eq!(app.tasks[0].nodes[2].execution, Execution::Implemented);
+    assert_eq!(
+        app.tasks[0].nodes[..2]
+            .iter()
+            .map(|n| n.attempts.len())
+            .collect::<Vec<_>>(),
+        prior_attempts
+    );
     continued.stop(&mut app, &mut store).unwrap();
 }
 #[test]

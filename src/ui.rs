@@ -367,21 +367,48 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         Mode::ConfirmStart { task_id, .. } => {
             let task = app.tasks.iter().find(|t| &t.id == task_id);
             let mut lines = vec![
-                Line::from("确认当前计划，授权模型修改独立候选工作区；不自动测试或合并。"),
+                Line::from("授权剩余节点顺序执行（非同时启动），已实现节点不重跑。"),
+                Line::from("只修改独立候选工作区；不自动测试或合并。"),
                 Line::from("代码可能外发；文件工具并非 OS 安全沙箱。"),
             ];
             if let Some(t) = task {
-                for n in &t.nodes {
+                let resume = t.resume_index().ok();
+                let done = t
+                    .nodes
+                    .iter()
+                    .filter(|n| n.execution == crate::nodes::Execution::Implemented)
+                    .count();
+                if let Some(index) = resume {
+                    lines.insert(
+                        0,
+                        Line::from(format!(
+                            "从 {} · {} 继续；跳过 {} 个已实现节点",
+                            t.nodes[index].contract.id, t.nodes[index].contract.title, done
+                        )),
+                    );
+                }
+                for (index, n) in t.nodes.iter().enumerate().take(8) {
+                    let state = if n.execution == crate::nodes::Execution::Implemented {
+                        "已实现·跳过"
+                    } else if Some(index) == resume {
+                        "本次起点"
+                    } else {
+                        "后续顺序执行"
+                    };
                     lines.push(Line::from(format!(
-                        "{} · {} · {}",
-                        n.contract.id,
-                        n.contract.title,
-                        n.contract.scope.join("、")
+                        "[{state}] {} · {}",
+                        n.contract.id, n.contract.title
+                    )));
+                }
+                if t.nodes.len() > 8 {
+                    lines.push(Line::from(format!(
+                        "另有 {} 个节点，完整契约在任务树中查看",
+                        t.nodes.len() - 8
                     )));
                 }
             }
-            lines.push(Line::from("Enter 启动实施 · Esc 返回讨论"));
-            popup(frame, theme, " 启动已有任务计划 ", lines, 90, 18);
+            lines.push(Line::from("Enter 确认继续未完成节点 · Esc 取消"));
+            popup(frame, theme, " 启动 / 继续已有任务计划 ", lines, 100, 18);
         }
         Mode::ConfirmDelete { selection } => popup(
             frame,
