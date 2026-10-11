@@ -1,7 +1,7 @@
 use crate::{
     checkpoint::{ChangeKind, Repository, Snapshot},
     keymap::{Action, Keymap},
-    nodes::{Execution, NodeRecord, Review, TaskRecord, TaskState, Verification},
+    nodes::{Execution, NodeContract, NodeRecord, Review, TaskRecord, TaskState, Verification},
     rpc::{RunState, RunStatus},
     storage::Message,
 };
@@ -62,6 +62,20 @@ pub enum Mode {
         node_id: String,
         checkpoint: String,
     },
+}
+
+/// Owned, domain-only snapshot for contract readers. No terminal styles or
+/// Markdown parsing; existing plain-text APIs remain available unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeContractContent {
+    pub task_id: String,
+    pub contract: NodeContract,
+    pub task_constraints: Vec<String>,
+    pub execution: Execution,
+    pub verification: Verification,
+    pub review: Review,
+    pub start_version: Option<String>,
+    pub completion_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -604,6 +618,27 @@ impl App {
             .map_or(0, |i| i.saturating_add_signed(delta).min(rows.len() - 1));
         self.select_task_entry(rows[index].0.clone());
     }
+    pub fn node_contract_content(&self) -> Option<NodeContractContent> {
+        let node = self.selected_node()?;
+        let task = self.selected_task()?;
+        Some(NodeContractContent {
+            task_id: task.id.clone(),
+            contract: node.contract.clone(),
+            task_constraints: task.plan.as_ref().map(|p| p.constraints.clone()).unwrap_or_default(),
+            execution: node.execution,
+            verification: node.verification,
+            review: node.review,
+            start_version: node.attempts.last().map(|a| a.base.clone()),
+            completion_version: node.review_snapshot().map(str::to_owned),
+        })
+    }
+
+    /// Contract scrolling also works when a review node has no file item.
+    pub fn showing_node_contract(&self) -> bool {
+        self.selected_node().is_some()
+            && (self.view == View::Tasks || (self.view == View::Review && self.page == Page::Intent))
+    }
+
     pub fn node_description(&self) -> Option<String> {
         let node = self.selected_node()?;
         let task = self.selected_task()?;
@@ -850,7 +885,7 @@ impl App {
                         self.mode = Mode::Browse;
                         if is_search {
                             self.filter = value;
-                            if self.view == View::Tasks {
+                            if self.view == View::Tasks || self.showing_node_contract() {
                                 self.task_scroll = 0;
                             }
                             if let Some(item) = self.items.get_mut(self.selected) {
@@ -1028,7 +1063,9 @@ impl App {
                     } else {
                         self.move_item(delta);
                     }
-                } else if self.view == View::Tasks {
+                } else if self.view == View::Tasks
+                    || (self.showing_node_contract() && self.panel == Panel::Reader)
+                {
                     let scroll = if self.panel == Panel::Reader {
                         &mut self.task_scroll
                     } else {
@@ -1069,6 +1106,7 @@ impl App {
                     Page::Code => Page::Evidence,
                     Page::Evidence => Page::Intent,
                 };
+                self.task_scroll = 0;
                 if let Some(item) = self.items.get_mut(self.selected) {
                     item.scroll = 0;
                 }

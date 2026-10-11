@@ -1,7 +1,8 @@
 use crate::{
-    app::{App, Mode, Page, Panel, View},
+    app::{App, Mode, NodeContractContent, Page, Panel, View},
     keymap::Action,
-    markdown::{Context as MarkdownContext, InlineStyle, Role, SemanticLine, Status},
+    markdown::{self, Context as MarkdownContext, Fragment, InlineStyle, Role, SemanticLine, Status},
+    nodes::{Execution, Review, Verification},
 };
 use ratatui::{
     Frame,
@@ -88,6 +89,13 @@ impl Theme {
         }
         if inline.code {
             style = style.fg(self.warning).bg(self.bg);
+        }
+        // Real status and constraint warnings take priority over Markdown
+        // heading/link/code colors. Inline modifiers remain intact.
+        if context.status != Status::None {
+            style = style.fg(color);
+        } else if context.role == Role::Constraint {
+            style = style.fg(self.warning);
         }
         style
     }
@@ -665,8 +673,133 @@ fn review_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
     );
 }
 
+/// Display blocks are built from fields, never by splitting node_description.
+/// Each block retains its raw searchable text as well as styled rendered text.
+struct ContractBlock {
+    source: String,
+    lines: Vec<SemanticLine>,
+}
+
+fn contract_literal(text: &str, width: usize, role: Role, status: Status, strong: bool) -> Vec<SemanticLine> {
+    markdown::wrap(
+        &[Fragment { text: text.to_owned(), style: InlineStyle { strong, ..Default::default() } }],
+        width,
+        MarkdownContext { role, status },
+    )
+}
+
+fn contract_field(label: &str, values: &[String], width: usize, role: Role, literal: bool) -> ContractBlock {
+    let mut lines = contract_literal(label, width, Role::Field, Status::None, true);
+    if values.is_empty() {
+        lines.extend(contract_literal("（无）", width, Role::System, Status::None, false));
+    }
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            lines.extend(markdown::wrap(&[], width, MarkdownContext::default()));
+        }
+        if literal {
+            lines.extend(contract_literal(value, width, role, Status::None, false));
+        } else {
+            // Parse each complete field/list entry, not each physical source line.
+            lines.extend(markdown::render(value, width, MarkdownContext { role, status: Status::None }));
+        }
+    }
+    ContractBlock { source: format!("{label}\n{}", values.join("\n")), lines }
+}
+
+fn contract_status(label: &str, value: &str, status: Status, width: usize) -> ContractBlock {
+    let text = format!("{label}：{value}");
+    ContractBlock {
+        source: text.clone(),
+        lines: contract_literal(&text, width, Role::Body, status, true),
+    }
+}
+
+/// Human-started checks (not automatically run):
+/// `cargo test --lib ui::contract_tests`. In Tasks and Review/Intent, inspect
+/// the same node in both themes; search a body phrase, path and version; clear
+/// search; resize; scroll through every acceptance entry. Confirm literal
+/// `[x]` source markers never change the separate verification/review labels.
+fn contract_layout(content: &NodeContractContent, width: usize, filter: &str) -> Vec<SemanticLine> {
+    let node = &content.contract;
+    let mut blocks = Vec::new();
+    let mut title = markdown::render(&node.title, width, MarkdownContext { role: Role::Field, status: Status::None });
+    for fragment in title.iter_mut().flat_map(|l| &mut l.fragments) {
+        fragment.style.strong = true;
+    }
+    let mut title_lines = contract_literal("节点契约", width, Role::Field, Status::None, true);
+    title_lines.extend(title);
+    blocks.push(ContractBlock { source: format!("节点契约\n{}", node.title), lines: title_lines });
+    blocks.push(contract_field("节点 ID", std::slice::from_ref(&node.id), width, Role::System, true));
+    blocks.push(contract_field("任务 ID", std::slice::from_ref(&content.task_id), width, Role::System, true));
+
+    let (execution, execution_status) = match content.execution {
+        Execution::Planned => ("未开始", Status::Pending),
+        Execution::Running => ("执行中", Status::Pending),
+        Execution::Paused => ("已暂停", Status::Pending),
+        Execution::Implemented => ("实现完成（不代表验收通过）", Status::None),
+        Execution::NoChanges => ("未交付（无文件改动）", Status::Pending),
+        Execution::Failed => ("失败", Status::Failure),
+        Execution::Cancelled => ("已取消", Status::Pending),
+        Execution::Interrupted => ("已中断", Status::Pending),
+    };
+    blocks.push(contract_status("执行状态", execution, execution_status, width));
+    let (verification, verification_status) = match content.verification {
+        Verification::Unverified => ("未验证", Status::Pending),
+        Verification::Passed => ("通过", Status::Success),
+        Verification::Failed => ("失败", Status::Failure),
+    };
+    blocks.push(contract_status("验收状态", verification, verification_status, width));
+    let (review, review_status) = match content.review {
+        Review::Pending => ("待审", Status::Pending),
+        Review::Approved => ("已批准", Status::Success),
+        Review::ChangesRequested => ("要求返工", Status::Failure),
+    };
+    blocks.push(contract_status("人工审核", review, review_status, width));
+    blocks.push(contract_field("目标", std::slice::from_ref(&node.objective), width, Role::Body, false));
+    blocks.push(contract_field("文件范围", &node.scope, width, Role::Body, true));
+    blocks.push(contract_field("边界条件", &node.boundaries, width, Role::Constraint, false));
+    blocks.push(contract_field("实现方法", std::slice::from_ref(&node.implementation), width, Role::Body, false));
+    blocks.push(contract_field("任务约束", &content.task_constraints, width, Role::Constraint, false));
+    blocks.push(contract_field("节点约束", &node.constraints, width, Role::Constraint, false));
+    blocks.push(contract_field("依赖", &node.dependencies, width, Role::Body, true));
+
+    blocks.push(contract_status("验收条件", "逐项未验证；文档复选框不代表真实验收或批准", Status::Pending, width));
+    if node.acceptance.is_empty() {
+        blocks.push(contract_status("验收条件", "未提供条件，不能视为通过", Status::Pending, width));
+    }
+    for (index, acceptance) in node.acceptance.iter().enumerate() {
+        // This warning is a distinct literal block: Markdown cannot restyle it.
+        let label = format!("□ 未验证 · 验收条件 {}", index + 1);
+        let mut lines = contract_literal(&label, width, Role::Constraint, Status::Pending, true);
+        lines.extend(markdown::render(acceptance, width, MarkdownContext::default()));
+        blocks.push(ContractBlock { source: format!("{label}\n{acceptance}"), lines });
+    }
+    let start = content.start_version.clone().unwrap_or_else(|| "尚未执行".into());
+    let completion = content.completion_version.clone().unwrap_or_else(|| "尚未生成".into());
+    blocks.push(contract_field("开始版本", &[start], width, Role::System, true));
+    blocks.push(contract_field("完成版本", &[completion], width, Role::System, true));
+
+    let mut lines = Vec::new();
+    for block in blocks {
+        // Filter whole already-parsed blocks, retaining labels and cross-line
+        // Markdown structure. Match raw and rendered content before cell wrapping
+        // can split a phrase. Concatenation also permits long literal metadata.
+        let rendered: String = block.lines.iter().map(SemanticLine::text).collect();
+        if !filter.is_empty() && !block.source.contains(filter) && !rendered.contains(filter) {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.extend(markdown::wrap(&[], width, MarkdownContext::default()));
+        }
+        lines.extend(block.lines);
+    }
+    lines
+}
+
 #[derive(PartialEq, Eq)]
 struct ReaderKey {
+    contract: Option<NodeContractContent>,
     node_evidence: Option<String>,
     scope: Option<String>,
     width: u16,
@@ -682,11 +815,21 @@ struct ReaderKey {
 struct ReaderCache {
     key: Option<ReaderKey>,
     lines: Vec<(String, i8)>,
+    contract_lines: Option<Vec<SemanticLine>>,
     builds: usize,
 }
 impl ReaderCache {
     fn prepare(&mut self, app: &App, width: u16) {
+        let contract = if app.showing_node_contract() { app.node_contract_content() } else { None };
+        // The complete domain snapshot already tracks contract edits and actual
+        // statuses. Unrelated chat/note revisions must not rebuild this layout.
+        let revision = if contract.is_none() && matches!(app.view, View::Tasks | View::Knowledge) {
+            app.content_revision
+        } else {
+            0
+        };
         let key = ReaderKey {
+            contract,
             node_evidence: if app.view == View::Review && app.page == Page::Evidence {
                 app.node_evidence()
             } else {
@@ -707,17 +850,19 @@ impl ReaderCache {
                 .current()
                 .map_or_else(String::new, |item| item.version.clone()),
             filter: app.filter.clone(),
-            revision: if matches!(app.view, View::Tasks | View::Knowledge) {
-                app.content_revision
-            } else {
-                0
-            },
+            revision,
         };
         if self.key.as_ref() == Some(&key) {
             return;
         }
         self.lines.clear();
+        self.contract_lines = None;
         self.builds += 1;
+        if let Some(contract) = &key.contract {
+            self.contract_lines = Some(contract_layout(contract, width as usize, &app.filter));
+            self.key = Some(key);
+            return;
+        }
         let page = match app.page {
             Page::Intent => "意图",
             Page::Code
@@ -800,13 +945,19 @@ pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
 
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
     cache.prepare(app, area.width.saturating_sub(2));
-    let scroll = if app.view == View::Tasks {
+    let scroll = if app.view == View::Tasks || cache.contract_lines.is_some() {
         app.task_scroll
     } else {
         app.current().map_or(0, |item| item.scroll)
     } as usize;
-    let content: Vec<Line> = cache
-        .lines
+    let content: Vec<Line> = if let Some(lines) = &cache.contract_lines {
+        lines.iter().skip(scroll).take(area.height.saturating_sub(2) as usize).map(|line| {
+            Line::from(line.fragments.iter().map(|fragment| {
+                Span::styled(fragment.text.as_str(), theme.markdown_style(line.context, fragment.style))
+            }).collect::<Vec<_>>())
+        }).collect()
+    } else {
+        cache.lines
         .iter()
         .skip(scroll)
         .take(area.height.saturating_sub(2) as usize)
@@ -826,7 +977,8 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
             };
             Line::from(Span::styled(text.as_str(), style))
         })
-        .collect();
+        .collect()
+    };
     frame.render_widget(
         Paragraph::new(content).block(theme.block(
             format!(
@@ -933,6 +1085,189 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
+}
+
+/// Manual regression procedure (run only when explicitly requested):
+/// 1. `cargo test --lib ui::contract_tests`.
+/// 2. Open one node in Tasks and Review/Intent, in light and dark themes.
+///    Inspect title/labels, normal body, warning boundaries/constraints and
+///    muted literal IDs/paths/versions; scroll to the last acceptance condition.
+/// 3. Search a Markdown body phrase and a literal path/version, clear search,
+///    switch nodes, revise the contract and resize. Check updated content and
+///    inline emphasis on wrapped lines; scrolling alone must not rebuild it.
+/// 4. Put `- [x] document only` in an acceptance field. Its separate `□ 未验证`
+///    label and the actual verification/review statuses must remain independent.
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::{
+        app::TaskSelection,
+        keymap::Keymap,
+        nodes::{NodeContract, NodeRecord, TaskRecord},
+    };
+
+    fn content() -> NodeContractContent {
+        NodeContractContent {
+            task_id: "task_literal".into(),
+            contract: NodeContract {
+                id: "node_literal".into(),
+                title: "**契约标题**".into(),
+                objective: "正文 **强调中文 emoji 👩‍💻 e\u{301} continuation**".into(),
+                scope: vec!["src/[literal]_file.rs".into()],
+                boundaries: vec!["不可 [链接](https://example.test) **越界**".into()],
+                implementation: "## 方法\n\n> 说明\n\n- 第一步\n- 第二步".into(),
+                constraints: vec!["节点 **约束**".into()],
+                dependencies: vec!["dependency_literal".into()],
+                acceptance: vec!["- [x] document only".into(), "第二条验收".into()],
+            },
+            task_constraints: vec!["任务 **约束**".into()],
+            execution: Execution::Implemented,
+            verification: Verification::Unverified,
+            review: Review::Pending,
+            start_version: Some("base_[literal]".into()),
+            completion_version: Some("completion_*literal*".into()),
+        }
+    }
+
+    fn text(lines: &[SemanticLine]) -> String {
+        lines.iter().map(SemanticLine::text).collect::<Vec<_>>().join("\n")
+    }
+
+    fn app() -> App {
+        let content = content();
+        let mut task = TaskRecord::legacy(&content.task_id, "需求", "session");
+        task.nodes.push(NodeRecord::new(content.contract));
+        let mut app = App::empty(Keymap::default());
+        app.tasks.push(task);
+        app.view = View::Tasks;
+        app.select_task_entry(TaskSelection {
+            task_id: content.task_id,
+            node_id: Some("node_literal".into()),
+        });
+        app
+    }
+
+    #[test]
+    fn fields_and_literal_metadata_are_retained() {
+        let lines = contract_layout(&content(), 100, "");
+        let output = text(&lines);
+        for expected in ["契约标题", "节点 ID", "任务 ID", "执行状态", "验收状态", "人工审核",
+            "目标", "文件范围", "边界条件", "实现方法", "任务约束", "节点约束", "依赖",
+            "第二条验收", "开始版本", "完成版本", "src/[literal]_file.rs",
+            "dependency_literal", "base_[literal]", "completion_*literal*"] {
+            assert!(output.contains(expected), "missing {expected}");
+        }
+        assert!(!output.contains("**契约标题**"));
+        assert!(lines.iter().flat_map(|l| &l.fragments).any(|f| f.style.heading > 0));
+        for light in [false, true] {
+            let theme = Theme::new(light);
+            let normal = theme.markdown_style(MarkdownContext::default(), InlineStyle::default());
+            for (role, color) in [(Role::Field, theme.accent), (Role::Constraint, theme.warning), (Role::System, theme.muted)] {
+                let style = theme.markdown_style(MarkdownContext { role, status: Status::None }, InlineStyle::default());
+                assert_eq!(style.fg, Some(color));
+                assert_ne!(style.fg, normal.fg);
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_body_preserves_inline_and_warning_semantics() {
+        let field = contract_field("目标", &[content().contract.objective], 12, Role::Body, false);
+        assert!(field.lines.iter().all(|l| l.width() <= 12));
+        let strong: Vec<_> = field.lines.iter().skip(1)
+            .filter(|l| l.fragments.iter().any(|f| f.style.strong)).collect();
+        assert!(strong.len() > 1);
+        let joined: String = field.lines.iter().skip(1).map(SemanticLine::text).collect();
+        assert!(joined.contains("👩‍💻 e\u{301}"));
+        assert!(!joined.contains("**"));
+        let warning = contract_field("边界", &["# 标题\n\n[链接](url) `code`".into()], 12, Role::Constraint, false);
+        for light in [false, true] {
+            assert!(style_markdown(&warning.lines[1..], light).iter().flat_map(|l| &l.spans)
+                .all(|s| s.style.fg == Some(Theme::new(light).warning)));
+        }
+    }
+
+    #[test]
+    fn document_checkboxes_never_become_real_success() {
+        let mut content = content();
+        let lines = contract_layout(&content, 100, "document only");
+        assert!(text(&lines).contains("□ 未验证 · 验收条件 1"));
+        assert!(lines.iter().all(|l| l.context.status != Status::Success));
+        content.verification = Verification::Passed;
+        content.review = Review::Approved;
+        let lines = contract_layout(&content, 100, "");
+        assert!(lines.iter().any(|l| l.text() == "验收状态：通过" && l.context.status == Status::Success));
+        assert!(lines.iter().any(|l| l.text() == "人工审核：已批准" && l.context.status == Status::Success));
+        // No per-condition evidence exists: even an aggregate Passed status
+        // cannot silently check individual conditions or document markers.
+        assert!(text(&lines).contains("□ 未验证 · 验收条件 2"));
+    }
+
+    #[test]
+    fn search_matches_source_and_rendered_text_before_wrapping() {
+        for filter in ["正文 **强调", "正文 强调", "src/[literal]_file.rs", "completion_*literal*"] {
+            let lines = contract_layout(&content(), 8, filter);
+            assert!(!lines.is_empty(), "missing search result for {filter}");
+            assert!(lines.iter().all(|l| l.width() <= 8));
+        }
+        assert!(contract_layout(&content(), 8, "不存在的内容").is_empty());
+        assert!(contract_layout(&content(), 0, "").is_empty());
+    }
+
+    #[test]
+    fn cache_tracks_contract_selection_page_width_and_search_not_scroll() {
+        let mut app = app();
+        let mut cache = ReaderCache::default();
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 1);
+        app.task_scroll = 4;
+        app.content_revision += 1; // unrelated chat/note update
+        app.light = !app.light;
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 1);
+        app.tasks[0].nodes[0].contract.objective = "修订目标".into();
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 2);
+        assert!(text(cache.contract_lines.as_ref().unwrap()).contains("修订目标"));
+        app.tasks[0].nodes[0].verification = Verification::Failed;
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 3);
+        assert!(text(cache.contract_lines.as_ref().unwrap()).contains("验收状态：失败"));
+        app.filter = "修订目标".into();
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 4);
+        cache.prepare(&app, 12);
+        assert_eq!(cache.builds, 5);
+        app.filter.clear();
+        app.view = View::Review;
+        app.page = Page::Intent;
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, 6);
+        let review_lines = cache.contract_lines.clone().unwrap();
+        app.view = View::Tasks;
+        cache.prepare(&app, 40);
+        assert_eq!(review_lines, *cache.contract_lines.as_ref().unwrap());
+        let mut second = content().contract;
+        second.id = "second_node".into();
+        second.title = "第二个节点".into();
+        app.tasks[0].nodes.push(NodeRecord::new(second));
+        app.select_task_entry(TaskSelection { task_id: "task_literal".into(), node_id: Some("second_node".into()) });
+        cache.prepare(&app, 40);
+        assert!(text(cache.contract_lines.as_ref().unwrap()).contains("第二个节点"));
+        app.view = View::Review;
+        app.page = Page::Code;
+        cache.prepare(&app, 40);
+        assert!(cache.contract_lines.is_none());
+    }
+
+    #[test]
+    fn legacy_plain_text_interfaces_remain_available() {
+        let app = app();
+        let description = app.node_description().unwrap();
+        assert!(description.contains("src/[literal]_file.rs"));
+        assert!(description.contains("□ - [x] document only"));
+        assert_eq!(app.task_lines(), description.lines().map(|l| (l.to_owned(), 2)).collect::<Vec<_>>());
+    }
 }
 
 #[cfg(test)]
