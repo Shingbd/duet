@@ -56,6 +56,7 @@ pub struct CodingRun {
     timeout: Duration,
     deadline: Instant,
     remaining: Duration,
+    timed_out: bool,
     finished: bool,
     closed: bool,
     settled: bool,
@@ -181,6 +182,7 @@ impl CodingRun {
             timeout,
             deadline: Instant::now() + timeout,
             remaining: timeout,
+            timed_out: false,
             finished: discussion,
             closed: false,
             settled: false,
@@ -336,6 +338,7 @@ impl CodingRun {
             timeout,
             deadline: Instant::now() + timeout,
             remaining: timeout,
+            timed_out: false,
             checkpoint: None,
             finished: false,
             closed: false,
@@ -753,6 +756,7 @@ impl CodingRun {
                 changed = true;
             }
         } else if Instant::now() >= self.deadline && app.run.status == RunStatus::Running {
+            self.timed_out = true;
             self.cancel(app)?;
             app.status = "时间预算耗尽 · 正在停止".into();
             changed = true;
@@ -779,6 +783,13 @@ impl CodingRun {
     }
 
     fn finish_turn(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        if self.timed_out {
+            app.run.status = RunStatus::Failed;
+            app.run.error = Some(format!(
+                "执行时间预算耗尽（{} 秒，待审/暂停不计入）；已有修改保留，可明确确认 s 续写",
+                self.timeout.as_secs_f64()
+            ));
+        }
         match self.phase {
             Phase::Planning => return self.finish_planning(app, store),
             Phase::Node(index) => return self.finish_node(index, app, store),
@@ -1164,7 +1175,56 @@ impl CodingRun {
                 .context("节点执行基线缺失")?,
         )?;
         let task_context=task.plan.as_ref().map(|p|json!({"objective":p.objective,"constraints":p.constraints,"acceptance":p.acceptance}));
+        let completed = task
+            .nodes
+            .iter()
+            .filter(|n| n.execution == Execution::Implemented)
+            .map(|n| n.contract.id.clone())
+            .collect::<Vec<_>>();
         let node = &mut task.nodes[index];
+        let recovery = if let Some(previous) = node.attempts.last().filter(|a| {
+            matches!(
+                a.execution,
+                Execution::Failed
+                    | Execution::Cancelled
+                    | Execution::Interrupted
+                    | Execution::Running
+                    | Execution::Paused
+            )
+        }) {
+            let original = node
+                .attempts
+                .iter()
+                .find(|a| a.execution != Execution::NoChanges)
+                .context("续写原始基线缺失")?
+                .base
+                .clone();
+            let partial = Snapshot {
+                commit: base.commit.clone(),
+                parent: Some(original),
+                reference: None,
+            };
+            let files = self
+                .repo
+                .snapshot_changes(&partial)?
+                .into_iter()
+                .map(|c| c.path)
+                .collect::<Vec<_>>();
+            format!(
+                "\n续写交接：这是原节点停止后的继续，不是从零重做。候选已保留先前修改；当前固定恢复版本：{}。前次停止状态：{:?}。前次检查点：{}。本节点已修改文件：{}。已经实现的其他节点：{}。前次总结：{}。先读取 scope 内现有文件，核对已有实现/测试，仅补齐尚未完成的验收；不要清空既有修改或重写已完成节点。除非人类明确要求，不得因为缺少旧会话而重新实现。新会话不代表新任务。",
+                base.commit,
+                previous.execution,
+                previous
+                    .checkpoint
+                    .as_deref()
+                    .unwrap_or("未发布；以当前恢复版本为准"),
+                serde_json::to_string(&files)?,
+                serde_json::to_string(&completed)?,
+                serde_json::to_string(&previous.summary.chars().take(8000).collect::<String>())?
+            )
+        } else {
+            String::new()
+        };
         let message = format!(
             "仅执行当前节点，不要开始其他节点。不要运行测试、合并或部署。原始需求：{}\n任务总体契约：{}\n当前节点契约：{}\n明确补充意见：{}\n只可在节点 scope 内实现，越界需要停止并说明。完成后总结实现及未验证验收条件，不得宣称用户已批准。",
             serde_json::to_string(&task.prompt)?,
@@ -1172,6 +1232,7 @@ impl CodingRun {
             serde_json::to_string(&node.contract)?,
             serde_json::to_string(extra)?
         );
+        let message = format!("{message}{recovery}");
         node.begin(&base.commit);
         task.active_node_id = Some(node.contract.id.clone());
         task.state = TaskState::Running;
@@ -1282,7 +1343,14 @@ impl CodingRun {
             }
             if status != RunStatus::Settled {
                 self.finished = true;
-                app.status = "节点已停止 · 已有改动留在固定检查点，未验收".into();
+                app.status = if self.timed_out {
+                    format!(
+                        "超时停止 · 已保存 {} 个变更文件 · s 确认续写",
+                        changes.len()
+                    )
+                } else {
+                    "节点已停止 · 已有改动留在固定检查点，未验收".into()
+                };
                 store.finish_run(&self.id, &format!("{status:?}"), self.checkpoint.as_deref())?;
                 return Ok(());
             }

@@ -56,6 +56,7 @@ for line in sys.stdin:
  if r['type']=='get_state':
   response['data']={{'sessionId':'session-'+str(os.getpid()),'model':{{'id':'fake'}},'isStreaming':False,'isCompacting':False,'pendingMessageCount':0}}; emit(response)
  elif r['type']=='prompt':
+  with pathlib.Path(__file__).parent.joinpath('.duet/request-log').open('a') as log: log.write(json.dumps(r)+'\n')
   response['data']={{'disposition':'started'}}; emit(response); emit({{'type':'agent_start'}})
   if planner:
    if mode=='quota' and not pathlib.Path('quota-marker').exists():
@@ -68,7 +69,14 @@ for line in sys.stdin:
   else:
    node=json.loads(r['message'].split('\n当前节点契约：')[1].split('\n明确补充意见：')[0])
    code_turn+=1
-   if mode!='nochange' and (mode!='nochange_once' or code_turn>1): pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
+   if mode not in ('nochange','timeout_resume') and (mode!='nochange_once' or code_turn>1): pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
+   if mode=='timeout_resume':
+    path=pathlib.Path(node['scope'][0])
+    if '续写交接：' in r['message']:
+     assert path.read_text()==node['id']+' partial\n','host must preserve unfinished file before prompt'
+     path.write_text(path.read_text()+'resumed\n')
+    else:
+     path.write_text(node['id']+' partial\n');emit({{'type':'tool_execution_end','toolName':'write'}});time.sleep(.45)
    if mode=='violate': pathlib.Path('outside.txt').write_text('outside')
    if mode=='live':
     pathlib.Path(node['scope'][0]).write_text(node['id']+' first')
@@ -925,6 +933,70 @@ fn deletion_refuses_tampered_candidate_that_points_to_main_project() {
 }
 
 use duet_workbench::nodes::TaskState;
+
+#[test]
+fn timeout_preserves_partial_code_and_reopen_hands_it_to_new_session() {
+    let (dir, fake, mut store, mut app) = setup(1, "timeout_resume");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "requirement",
+        Duration::from_millis(150),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert_eq!(app.tasks[0].state, TaskState::Failed);
+    assert_eq!(app.tasks[0].nodes[0].execution, Execution::Failed);
+    assert!(
+        app.tasks[0]
+            .failure
+            .as_ref()
+            .unwrap()
+            .reason
+            .contains("时间预算耗尽")
+    );
+    assert!(app.status.contains("超时停止"));
+    let id = run.id.clone();
+    let checkpoint = run.checkpoint.clone().unwrap();
+    assert_eq!(
+        fs::read_to_string(run.worktree.join("file1.txt")).unwrap(),
+        "n1 partial\n"
+    );
+    let candidate = run.worktree.clone();
+    run.stop(&mut app, &mut store).unwrap();
+    drop(run);
+    let mut continued = CodingRun::open_existing(
+        &id,
+        &fake,
+        None,
+        false,
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut continued, &mut app, &mut store);
+    let prompts = fs::read_to_string(dir.path().join(".duet/request-log")).unwrap();
+    let last: serde_json::Value = serde_json::from_str(prompts.lines().last().unwrap()).unwrap();
+    let message = last["message"].as_str().unwrap();
+    assert!(message.contains("续写交接：") && message.contains("不是从零重做"));
+    assert!(message.contains(&checkpoint) && message.contains("file1.txt"));
+    assert_eq!(
+        fs::read_to_string(candidate.join("file1.txt")).unwrap(),
+        "n1 partial\nresumed\n"
+    );
+    assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.tasks[0].nodes[0].execution, Execution::Implemented);
+    assert_eq!(app.tasks[0].nodes[0].attempts.len(), 2);
+    assert_eq!(
+        app.tasks[0].nodes[0].attempts[0].checkpoint.as_deref(),
+        Some(checkpoint.as_str())
+    );
+    continued.stop(&mut app, &mut store).unwrap();
+}
 
 #[test]
 fn legacy_failed_discussion_recovers_error_from_local_session_without_model_call() {
