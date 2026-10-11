@@ -8,6 +8,165 @@ use duet_workbench::{
 use ratatui::{Terminal, backend::TestBackend};
 use std::{fs, process::Command};
 
+// In-memory snapshots isolate display regressions from Git/workflow operations.
+mod display_regression {
+    use super::*;
+    use duet_workbench::app::{Mode, Page, ReadingItem, TaskSelection};
+    use ratatui::style::Modifier;
+    use unicode_width::UnicodeWidthStr;
+
+    fn fixture() -> App {
+        let mut app = App::empty(Keymap::default());
+        app.items.push(ReadingItem {
+            title: "README.md".into(), version: "fixed_snapshot".into(),
+            intent: "# ΩIntent\n\n**visible intent**".into(),
+            code: "# λDocument\n\n**visible prose**\n\n- entry".into(),
+            diff: "+**Ωadded_literal**\n-# λremoved_literal".into(),
+            change: Some(ChangeKind::Modified),
+            evidence: "## ξEvidence\n\n- [x] document only".into(),
+            explanation: "**ψExplanation**".into(),
+            read: false, scroll: 0, evidence_scroll: 0,
+        });
+        app.panel = Panel::Reader;
+        app.fullscreen = true;
+        app
+    }
+
+    fn screen(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height).map(|y| {
+            let mut row = String::new();
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                row.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            row
+        }).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn markdown_project_selection_is_explicit_and_fixed_diffs_keep_literals_and_colors() {
+        let mut app = fixture();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        for light in [false, true] {
+            app.light = light;
+            app.view = View::Project;
+            for path in ["README.md", "notes.MARKDOWN", "a.mdown", "a.mkd"] {
+                app.items[0].title = path.into();
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                let output = screen(&terminal);
+                assert!(output.contains("visible prose"));
+                assert!(!output.contains("**visible prose**"));
+                let cell = terminal.backend().buffer().content.iter().find(|cell| cell.symbol() == "λ").unwrap();
+                assert!(cell.modifier.contains(Modifier::BOLD));
+            }
+            for path in ["src/a.rs", "a.md.rs", "notes.txt", "notes.mdx", "Makefile"] {
+                app.items[0].title = path.into();
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                let output = screen(&terminal);
+                assert!(output.contains("**visible prose**"));
+                assert!(output.contains("# λDocument"));
+            }
+            app.view = View::Review;
+            app.page = Page::Code;
+            app.items[0].title = "README.md".into();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let output = screen(&terminal);
+            assert!(output.contains("+**Ωadded_literal**"));
+            assert!(output.contains("-# λremoved_literal"));
+            let cells = &terminal.backend().buffer().content;
+            let added = cells.iter().find(|cell| cell.symbol() == "Ω").unwrap();
+            let removed = cells.iter().find(|cell| cell.symbol() == "λ").unwrap();
+            assert_ne!(added.fg, removed.fg);
+            assert!(!added.modifier.contains(Modifier::BOLD));
+            // Render only the preview; never prepare/confirm/execute a merge.
+            app.mode = Mode::MergePreview { scroll: 0, preview: duet_workbench::merge::MergePreview {
+                task_id: "task".into(), signature: "fixture".into(),
+                source_head: "a".repeat(40), delivery: "b".repeat(40),
+                branch: "main".into(), commit: "c".repeat(40),
+                diff: app.items[0].diff.clone(), paths: vec!["README.md".into()], unverified: 1,
+            } };
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains("+**Ωadded_literal**"));
+            let cells = &terminal.backend().buffer().content;
+            assert_ne!(cells.iter().find(|cell| cell.symbol() == "Ω").unwrap().fg,
+                cells.iter().find(|cell| cell.symbol() == "λ").unwrap().fg);
+            assert!(app.requested_merge.is_none());
+            app.mode = Mode::Browse;
+        }
+    }
+
+    #[test]
+    fn intent_evidence_explanation_and_independent_notes_share_markdown_styles() {
+        let mut app = fixture();
+        app.view = View::Review;
+        let mut terminal = Terminal::new(TestBackend::new(132, 36)).unwrap();
+        for light in [false, true] {
+            app.light = light;
+            app.fullscreen = true;
+            for (page, expected, symbol) in [(Page::Intent, "visible intent", "Ω"), (Page::Evidence, "document only", "ξ")] {
+                app.page = page;
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                assert!(screen(&terminal).contains(expected));
+                let cell = terminal.backend().buffer().content.iter().find(|cell| cell.symbol() == symbol).unwrap();
+                assert!(cell.modifier.contains(Modifier::BOLD));
+            }
+            app.fullscreen = false;
+            app.explain = true;
+            app.page = Page::Code;
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains("ψExplanation"));
+            assert!(!screen(&terminal).contains("**ψExplanation**"));
+            assert!(screen(&terminal).contains("document only"));
+            let cell = terminal.backend().buffer().content.iter().find(|cell| cell.symbol() == "ψ").unwrap();
+            assert!(cell.modifier.contains(Modifier::BOLD));
+            app.view = View::Knowledge;
+            app.fullscreen = true;
+            app.notes = vec!["```\nΩunfinished code".into(), "# λNext note\n\n**body**".into()];
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            assert!(screen(&terminal).contains("λNext note"));
+            let cell = terminal.backend().buffer().content.iter().find(|cell| cell.symbol() == "λ").unwrap();
+            assert!(cell.modifier.contains(Modifier::BOLD));
+            app.view = View::Review;
+        }
+    }
+
+    #[test]
+    fn evidence_search_and_unfinished_summary_cannot_hide_true_risk_metadata() {
+        use duet_workbench::nodes::{NodeContract, NodeRecord, TaskRecord};
+        let contract: NodeContract = serde_json::from_value(serde_json::json!({
+            "id":"n", "title":"title", "objective":"body", "scope":["src/a.rs"],
+            "boundaries":["scope"], "implementation":"step", "constraints":[],
+            "dependencies":[], "acceptance":["- [x] document only"]
+        })).unwrap();
+        let mut node = NodeRecord::new(contract);
+        node.begin("base");
+        node.attempts[0].checkpoint = Some("fixed_snapshot".into());
+        node.attempts[0].scope_violations = vec!["src/outside.rs".into()];
+        node.attempts[0].summary = "```\nsummary **not status**".into();
+        let mut task = TaskRecord::legacy("task", "request", "session");
+        task.nodes.push(node);
+        let mut app = fixture();
+        app.tasks.push(task);
+        app.task_selection = Some(TaskSelection { task_id: "task".into(), node_id: Some("n".into()) });
+        app.view = View::Review;
+        app.page = Page::Evidence;
+        app.explain = true;
+        app.filter = "summary".into();
+        for light in [false, true] {
+            app.light = light;
+            let mut terminal = Terminal::new(TestBackend::new(100, 36)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let output = screen(&terminal);
+            for expected in ["未验证", "待审", "仓内越界", "src/outside.rs", "summary **not status**"] {
+                assert!(output.contains(expected), "missing {expected}");
+            }
+        }
+    }
+}
+
 fn setup() -> (
     tempfile::TempDir,
     Repository,

@@ -57,6 +57,115 @@ fn scrolling_theme_and_agent_activity_reuse_immutable_reader_layout() {
 }
 
 #[test]
+fn markdown_and_evidence_reader_layouts_track_content_not_theme_or_scroll() {
+    use duet_workbench::app::View;
+    let mut app = fixture();
+    app.fullscreen = true;
+    app.view = View::Project;
+    app.items[0].title = "README.md".into();
+    app.items[0].code = "# Fixed document\n\n**body** 中文👩‍💻".into();
+    let mut renderer = Renderer::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    let initial = renderer.layout_builds();
+    for _ in 0..5 {
+        app.light = !app.light;
+        app.items[0].scroll += 1;
+        app.content_revision += 1;
+        terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    }
+    assert_eq!(renderer.layout_builds(), initial);
+    app.items[0].code.push_str("\n\nnew body");
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 1);
+    app.filter = "new body".into();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 2);
+    terminal.backend_mut().resize(40, 20);
+    terminal.resize(ratatui::layout::Rect::new(0, 0, 40, 20)).unwrap();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 3);
+    app.view = View::Review;
+    app.page = Page::Evidence;
+    app.filter.clear();
+    app.items[0].evidence = "## Evidence\n\n- [x] document only".into();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    let evidence = renderer.layout_builds();
+    app.light = !app.light;
+    app.items[0].scroll = 2;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), evidence);
+    app.items[0].evidence.push_str("\n\n**updated**");
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), evidence + 1);
+    terminal.backend_mut().resize(80, 24);
+    terminal.resize(ratatui::layout::Rect::new(0, 0, 80, 24)).unwrap();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), evidence + 2);
+    app.light = !app.light;
+    app.items[0].evidence_scroll += 1;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), evidence + 2);
+}
+
+#[test]
+fn contract_and_stream_layouts_invalidate_on_snapshot_and_stream_changes() {
+    use duet_workbench::{
+        app::{TaskSelection, View},
+        nodes::{NodeContract, NodeRecord, TaskRecord},
+    };
+    let contract: NodeContract = serde_json::from_value(serde_json::json!({
+        "id":"n", "title":"**title**", "objective":"body",
+        "scope":["src/a.rs"], "boundaries":["do not cross scope"],
+        "implementation":"- step", "constraints":["no tests"],
+        "dependencies":[], "acceptance":["- [x] document only"]
+    })).unwrap();
+    let mut task = TaskRecord::legacy("task", "request", "session");
+    task.nodes.push(NodeRecord::new(contract));
+    let mut app = App::empty(Keymap::default());
+    app.tasks.push(task);
+    app.view = View::Tasks;
+    app.select_task_entry(TaskSelection { task_id: "task".into(), node_id: Some("n".into()) });
+    app.fullscreen = true;
+    let mut renderer = Renderer::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    let initial = renderer.layout_builds();
+    app.light = !app.light;
+    app.task_scroll = 3;
+    app.content_revision += 1;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial);
+    app.tasks[0].nodes[0].contract.objective = "**updated**".into();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 1);
+    terminal.backend_mut().resize(40, 20);
+    terminal.resize(ratatui::layout::Rect::new(0, 0, 40, 20)).unwrap();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 2);
+    app.tasks[0].nodes[0].execution = duet_workbench::nodes::Execution::Running;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 3);
+    app.light = !app.light;
+    app.task_scroll = 0;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), initial + 3);
+    app.task_selection = None;
+    app.task = Some("request".into());
+    app.run.streaming_text = true;
+    app.run.text = "**partial".into();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    let stream = renderer.layout_builds();
+    app.light = !app.light;
+    app.task_scroll = 0;
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), stream);
+    app.run.text = "**completed**".into();
+    terminal.draw(|frame| renderer.draw(frame, &app)).unwrap();
+    assert_eq!(renderer.layout_builds(), stream + 1);
+}
+
+#[test]
 fn wrapping_preserves_graphemes_and_terminal_cell_width() {
     let source = "中文👩‍💻e\u{301}abc";
     let lines = wrap_cells(source, 4);
