@@ -23,6 +23,10 @@ pub fn delete_selection(
         .position(|t| t.id == selection.task_id)
         .context("任务不存在")?;
     let task = app.tasks[index].clone();
+    ensure!(
+        task.merged.is_none() || selection.node_id.is_none(),
+        "该任务已经合并，节点删除不能撤回主项目代码；请手动 revert 合并提交"
+    );
     let (worktree, branch) = store.candidate(&task.id)?;
     let source = Repository::open(store.directory().parent().context("主项目缺失")?)?;
     ensure!(source.root() != worktree, "拒绝操作主工作区");

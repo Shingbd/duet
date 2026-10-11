@@ -199,18 +199,18 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                     " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
                         format!(
-                            "{} 批准 · {} {} · {} 删除 · ",
+                            "{} 批准 · 自动实时预览 · {} 合并 · {} 删除 · ",
                             app.keymap.hint(Action::ApproveNode),
-                            app.keymap.hint(Action::FollowLive),
-                            if app.follow_live { "跟随" } else { "固定" },
+                            app.keymap.hint(Action::MergeTask),
                             app.keymap.hint(Action::DeleteSelected)
                         )
                     } else if app.view == View::Tasks {
                         format!(
-                            "{} 讨论 · {} 启动 · {} 删除 · ",
+                            "{} 讨论 · {} 启动 · {} 删除 · {} 合并 · ",
                             app.keymap.hint(Action::Reply),
                             app.keymap.hint(Action::StartTask),
-                            app.keymap.hint(Action::DeleteSelected)
+                            app.keymap.hint(Action::DeleteSelected),
+                            app.keymap.hint(Action::MergeTask)
                         )
                     } else {
                         String::new()
@@ -290,6 +290,69 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             72,
             7,
         ),
+        Mode::MergePreview { preview, scroll } => {
+            let height = frame.area().height.saturating_sub(4);
+            let mut lines = vec![
+                Line::from(format!(
+                    "整任务 {} · {} 个变更文件 · {} 个节点未验证",
+                    preview.task_id,
+                    preview.paths.len(),
+                    preview.unverified
+                )),
+                Line::from(format!(
+                    "主项目 {} → 候选 {}",
+                    &preview.source_head[..12],
+                    &preview.delivery[..12]
+                )),
+                Line::from("j/k / PageUp/Down 查看完整集成 diff · Enter 下一步确认 · Esc 取消"),
+            ];
+            for line in preview
+                .diff
+                .lines()
+                .skip(*scroll)
+                .take(height.saturating_sub(7) as usize)
+            {
+                let color = if line.starts_with('+') {
+                    theme.good
+                } else if line.starts_with('-') {
+                    theme.removed
+                } else {
+                    theme.text
+                };
+                lines.push(Line::from(Span::styled(
+                    safe_text(line),
+                    Style::default().fg(color),
+                )));
+            }
+            popup(
+                frame,
+                theme,
+                " 最终集成 diff · 主项目尚未变化 ",
+                lines,
+                128,
+                height,
+            );
+        }
+        Mode::ConfirmMerge { preview } => popup(
+            frame,
+            theme,
+            " 明确合并整个任务到主项目 ",
+            vec![
+                Line::from(format!(
+                    "任务：{} · 文件数：{}",
+                    preview.task_id,
+                    preview.paths.len()
+                )),
+                Line::from(format!(
+                    "未验证节点 {} 个；人工批准不代表测试通过。",
+                    preview.unverified
+                )),
+                Line::from("Enter 明确接受当前验证状态并合并 · Esc 取消"),
+                Line::from("不会运行测试/仓库 hooks/推送/部署；冲突或主项目改变会拒绝。"),
+            ],
+            100,
+            9,
+        ),
         Mode::ConfirmStart { task_id, .. } => {
             let task = app.tasks.iter().find(|t| &t.id == task_id);
             let mut lines = vec![
@@ -319,7 +382,11 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                 } else {
                     "删除整个任务、全部节点及其候选工作区。"
                 }),
-                Line::from("删除相关讨论与预览；先备份。主项目和其他任务不受影响。"),
+                Line::from(if app.selected_task().is_some_and(|t| t.merged.is_some()) {
+                    "已合并：此操作仅清理记录/候选，不撤销主项目合并。"
+                } else {
+                    "删除相关讨论与预览；先备份。主项目和其他任务不受影响。"
+                }),
                 Line::from("运行中的所选任务将停止，候选中的未追踪/忽略文件一并撤回。"),
                 Line::from("Enter 确认删除 · Esc 取消"),
             ],

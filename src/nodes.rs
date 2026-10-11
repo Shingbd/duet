@@ -214,6 +214,7 @@ pub enum Review {
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskState {
+    Merged,
     Planning,
     Ready,
     Running,
@@ -226,6 +227,7 @@ pub enum TaskState {
 impl TaskState {
     pub fn from_run(status: &str) -> Self {
         match status {
+            "Merged" => Self::Merged,
             "Ready" => Self::Ready,
             "Settled" => Self::Implemented,
             "Failed" => Self::Failed,
@@ -318,6 +320,12 @@ impl NodeRecord {
         self.execution == Execution::Implemented && self.review != Review::Approved
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MergeReceipt {
+    pub source_head: String,
+    pub delivery: String,
+    pub commit: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub id: String,
@@ -333,6 +341,8 @@ pub struct TaskRecord {
     pub plan_revisions: Vec<(TaskPlan, Vec<NodeRecord>)>,
     #[serde(default)]
     pub discussion_pending: bool,
+    #[serde(default)]
+    pub merged: Option<MergeReceipt>,
     #[serde(default)]
     pub nodes: Vec<NodeRecord>,
     #[serde(skip)]
@@ -351,6 +361,7 @@ impl TaskRecord {
             plan: None,
             plan_revisions: Vec::new(),
             discussion_pending: false,
+            merged: None,
             nodes: Vec::new(),
             history: Vec::new(),
         }
@@ -368,6 +379,10 @@ impl TaskRecord {
         Ok(())
     }
     pub fn revise_plan(&mut self, plan: TaskPlan) -> Result<()> {
+        ensure!(
+            self.merged.is_none(),
+            "已合并任务不能改写契约，请创建新任务"
+        );
         plan.validate()?;
         for node in &self.nodes {
             if node.attempts.iter().any(|a| a.changed_files != Some(0)) {
@@ -398,7 +413,43 @@ impl TaskRecord {
         self.state = TaskState::Ready;
         Ok(())
     }
+    pub fn merge_ready(&self) -> Result<()> {
+        ensure!(
+            self.merged.is_none() && self.state == TaskState::Implemented,
+            "任务须全部实现且尚未合并"
+        );
+        ensure!(!self.discussion_pending, "讨论尚未定稿，不能合并旧计划");
+        let plan = self.plan.as_ref().context("缺少结构化计划")?;
+        plan.validate()?;
+        ensure!(
+            self.nodes.iter().map(|n| &n.contract).eq(plan.nodes.iter()),
+            "节点与计划不一致"
+        );
+        ensure!(
+            self.nodes.iter().all(|n| {
+                n.execution == Execution::Implemented
+                    && n.review == Review::Approved
+                    && n.reviewed_checkpoint.as_deref() == n.checkpoint()
+                    && n.checkpoint().is_some()
+                    && n.attempts.last().is_some_and(|a| {
+                        a.review == Review::Approved && a.scope_violations.is_empty()
+                    })
+            }),
+            "所有节点须明确批准其当前最终检查点"
+        );
+        ensure!(
+            self.nodes
+                .iter()
+                .all(|n| n.verification != Verification::Failed
+                    && n.attempts
+                        .last()
+                        .is_some_and(|a| a.verification != Verification::Failed)),
+            "存在验收失败节点，拒绝合并"
+        );
+        Ok(())
+    }
     pub fn startable(&self) -> Result<()> {
+        ensure!(self.merged.is_none(), "任务已合并，后续改动请新建任务");
         ensure!(
             !self.discussion_pending,
             "当前讨论尚未定稿，请先 i 完成澄清；不能沿用旧计划开工"

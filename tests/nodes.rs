@@ -117,7 +117,7 @@ fn schema_three_restores_all_task_nodes_and_interrupts_without_auto_running() {
     assert_eq!(
         db.pragma_query_value::<u32, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        5
+        6
     );
 }
 #[test]

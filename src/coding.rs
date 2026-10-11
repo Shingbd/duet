@@ -120,6 +120,10 @@ impl CodingRun {
             .iter()
             .find(|t| t.id == id)
             .context("任务不存在")?;
+        ensure!(
+            task.merged.is_none(),
+            "已合并任务不可继续编码/改写计划，请新建任务"
+        );
         if !discussion {
             task.startable()?;
         }
@@ -214,12 +218,6 @@ impl CodingRun {
             run.checkpoint = Some(actual.commit);
             store.save_task(task)?;
             run.start_next(app, store)?;
-            if app
-                .selected_node()
-                .is_some_and(|n| n.execution == Execution::Running)
-            {
-                app.follow_live = true;
-            }
         }
         Ok(run)
     }
@@ -669,7 +667,7 @@ impl CodingRun {
                         && matches!(record["toolName"].as_str(), Some("write" | "edit"))
                     {
                         self.live_due
-                            .get_or_insert(Instant::now() + Duration::from_millis(700));
+                            .get_or_insert(Instant::now() + Duration::from_millis(200));
                     }
                     if record["type"] == "message_end" {
                         let message = &record["message"];
@@ -1143,16 +1141,6 @@ impl CodingRun {
         self.live_due = None;
         app.planning_only = false;
         self.phase = Phase::Node(index);
-        if app.review_version.is_none()
-            && app.selected_node().is_some_and(|n| {
-                n.contract.id
-                    == app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
-                        .contract
-                        .id
-            })
-        {
-            app.follow_live = true;
-        }
         self.finished = false;
         self.waiting = false;
         self.settled = false;

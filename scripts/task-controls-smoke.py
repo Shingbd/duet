@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake RPC + real PTY: discussion, restart/start, live diff/pin, node/task discard."""
+"""Fake RPC + real PTY: discussion, restart/start, automatic diff, node/task discard."""
 import fcntl,json,os,pathlib,pty,select,sqlite3,struct,subprocess,sys,tempfile,termios,time
 
 binary=pathlib.Path(sys.argv[1]).resolve()
@@ -80,12 +80,11 @@ for line in sys.stdin:
         drain(.15)
         assert b'+n1 first' in output,'live reader must show first immutable diff'
         first=records()[1][0]['attempts'][0]['previews'][0]
-        send(b'v')
         wait(lambda:len(records()[1][0]['attempts'][0].get('previews',[]))>=2)
         drain(.4)
-        assert records()[2]['review_version']==first,'pinned reader must not advance'
+        assert records()[2]['review_version']!=first,'reader must automatically show the growing diff'
         wait(lambda:all(n['execution']=='Implemented' for n in records()[1]))
-        send(b'v');drain(.4)
+        drain(.4)
         assert b'second' in output
         assert records()[2]['selected'][0]==records()[1][0]['attempts'][-1]['checkpoint']
         send(b'1\t\tj')
@@ -101,7 +100,7 @@ for line in sys.stdin:
         assert (project/'base.txt').read_text()=='baseline\n'
         send(b'q');assert process.wait(timeout=3)==0
         assert termios.tcgetattr(slave)==before
-        print('PTY task controls passed: read-only discussion, saved-plan start, live preview, pin, node rollback, task deletion, source safety')
+        print('PTY task controls passed: read-only discussion, saved-plan start, automatic live preview without v, node rollback, task deletion, source safety')
     finally:
         if process and process.poll() is None:process.kill();process.wait()
         os.close(master);os.close(slave)

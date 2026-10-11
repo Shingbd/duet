@@ -16,6 +16,9 @@ use std::{
 fn setup(count: usize, mode: &str) -> (tempfile::TempDir, std::path::PathBuf, WorkspaceStore, App) {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("base.txt"), "baseline\n").unwrap();
+    if mode == "live" {
+        fs::write(dir.path().join("file1.txt"), "old baseline\n").unwrap();
+    }
     for args in [
         vec!["init", "-q"],
         vec!["add", "."],
@@ -368,7 +371,7 @@ fn explicit_node_approval_is_confirmed_persisted_and_does_not_verify_or_merge() 
 }
 
 #[test]
-fn node_rework_keeps_old_checkpoint_approval_and_pinned_reading_version() {
+fn node_rework_keeps_old_checkpoint_approval_and_automatically_follows_current_node() {
     use duet_workbench::{
         app::{Panel, TaskSelection},
         keymap::Action,
@@ -403,7 +406,7 @@ fn node_rework_keeps_old_checkpoint_approval_and_pinned_reading_version() {
     )
     .unwrap();
     poll(&mut run, &mut app, &mut store);
-    assert_eq!(app.current().unwrap().version, old);
+    assert_ne!(app.current().unwrap().version, old);
     assert_eq!(app.current().unwrap().scroll, 2);
     let node = app.selected_node().unwrap();
     assert_eq!(node.attempts.len(), 2);
@@ -411,7 +414,13 @@ fn node_rework_keeps_old_checkpoint_approval_and_pinned_reading_version() {
     assert_eq!(node.review, Review::Pending);
     assert_eq!(node.verification, Verification::Unverified);
     assert_ne!(node.checkpoint(), Some(old.as_str()));
-    assert!(app.node_evidence().unwrap().contains("已批准"));
+    assert!(app.node_evidence().unwrap().contains("待审"));
+    assert!(
+        Repository::open(&run.worktree)
+            .unwrap()
+            .resolve_snapshot(&old)
+            .is_ok()
+    );
     app.select_task_entry(TaskSelection {
         task_id: run.id.clone(),
         node_id: Some("n2".into()),
@@ -598,7 +607,7 @@ fn discussion_is_readonly_supports_questions_and_saved_plan_explicit_start() {
 }
 
 #[test]
-fn running_diff_uses_immutable_previews_and_explicit_pin_preserves_position() {
+fn running_diff_automatically_follows_selected_node_and_preserves_position() {
     use duet_workbench::keymap::Action;
     let (dir, fake, mut store, mut app) = setup(1, "live");
     let mut run = CodingRun::start_planning(
@@ -625,19 +634,24 @@ fn running_diff_uses_immutable_previews_and_explicit_pin_preserves_position() {
     }
     assert_eq!(app.tasks[0].nodes[0].execution, Execution::Running);
     assert!(app.body().contains("+n1 first"));
+    assert!(app.body().contains("-old baseline"));
     let first = app.review_checkpoint().unwrap().to_owned();
     app.items[app.selected].scroll = 3;
     app.act(Action::ApproveNode);
     assert_eq!(app.mode, duet_workbench::app::Mode::Browse);
-    app.act(Action::FollowLive);
-    assert!(!app.follow_live);
+    assert!(
+        app.keymap
+            .resolve(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('v'),
+                crossterm::event::KeyModifiers::NONE
+            ))
+            .is_none()
+    );
     poll(&mut run, &mut app, &mut store);
-    assert_eq!(app.review_checkpoint(), Some(first.as_str()));
-    assert!(app.body().contains("+n1 first"));
-    assert!(!app.body().contains("+n1 second"));
+    assert_ne!(app.review_checkpoint(), Some(first.as_str()));
+    assert!(app.body().contains("+n1 second"));
     assert_eq!(app.items[app.selected].scroll, 3);
     assert!(app.tasks[0].nodes[0].attempts[0].previews.len() >= 2);
-    app.act(Action::FollowLive);
     assert!(app.body().contains("+n1 second"));
     assert_eq!(app.review_checkpoint(), app.tasks[0].nodes[0].checkpoint());
     assert!(

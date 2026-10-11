@@ -33,7 +33,7 @@ pub enum Action {
     ApproveNode,
     StartTask,
     DeleteSelected,
-    FollowLive,
+    MergeTask,
     Cancel,
     Pause,
     Reply,
@@ -68,7 +68,7 @@ pub const ACTIONS: &[(Action, &str, &[&str])] = &[
         "删除所选节点/任务并撤回候选修改",
         &["d"],
     ),
-    (Action::FollowLive, "跟随运行节点 / 固定审核版本", &["v"]),
+    (Action::MergeTask, "预览并确认合并整个已批准任务", &["g"]),
     (Action::Pause, "暂停 / 继续编码", &["p"]),
     (Action::Reply, "纠正 / 追问 AI", &["i"]),
     (Action::Cancel, "取消编码", &["ctrl+x"]),
@@ -94,6 +94,8 @@ impl Keymap {
     }
 
     pub fn from_overrides(mut config: BTreeMap<String, Vec<String>>) -> Result<Self> {
+        // Retired binding: never let an old configuration re-enable v/follow toggling.
+        config.remove("follow_live");
         let mut bindings = HashMap::new();
         let mut help = Vec::new();
         for (action, label, defaults) in ACTIONS {

@@ -47,8 +47,6 @@ struct SavedUi {
     task_selection: Option<crate::app::TaskSelection>,
     #[serde(default)]
     review_version: Option<String>,
-    #[serde(default)]
-    follow_live: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +113,25 @@ impl WorkspaceStore {
             fs::set_permissions(&database, fs::Permissions::from_mode(0o600))?;
         }
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        ensure!(version <= 5, "项目数据版本 {version} 高于当前程序支持版本");
+        ensure!(version <= 6, "项目数据版本 {version} 高于当前程序支持版本");
+        if version > 0 && version < 6 {
+            let backups = directory.join("backups");
+            fs::create_dir_all(&backups)?;
+            ensure_regular(&backups, true)?;
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let path = backups.join(format!("before-schema-6-{nonce}.db"));
+            connection.execute(
+                "VACUUM INTO ?1",
+                [path.to_str().context("备份路径不是 UTF-8")?],
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            }
+        }
         if version == 0 {
             let tx = connection.transaction()?;
             tx.execute_batch(
@@ -161,6 +177,9 @@ impl WorkspaceStore {
         }
         if version < 5 {
             connection.execute_batch("CREATE TABLE IF NOT EXISTS discussion_messages(task_id TEXT NOT NULL,node_id TEXT,message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE); PRAGMA user_version=5;")?;
+        }
+        if version < 6 {
+            connection.execute_batch("CREATE TABLE IF NOT EXISTS merge_intents(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,record TEXT NOT NULL); PRAGMA user_version=6;")?;
         }
         connection.pragma_update(None, "foreign_keys", true)?;
         // Exclusive project lock ensures these cannot belong to another live instance.
@@ -269,6 +288,7 @@ impl WorkspaceStore {
             task.interrupt();
             store.save_task(&task)?;
         }
+        crate::merge::recover(&mut store)?;
         Ok(store)
     }
 
@@ -407,6 +427,25 @@ impl WorkspaceStore {
         self.saved_tasks_revision = None;
         Ok(())
     }
+    pub fn merge_intents(&self) -> Result<Vec<crate::merge::MergePreview>> {
+        let mut q = self
+            .connection
+            .prepare("SELECT record FROM merge_intents")?;
+        q.query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .map(|s| Ok(serde_json::from_str(s)?))
+            .collect()
+    }
+    pub fn save_merge_intent(&self, preview: &crate::merge::MergePreview) -> Result<()> {
+        self.connection.execute("INSERT INTO merge_intents VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET record=excluded.record",params![preview.task_id,serde_json::to_string(preview)?])?;
+        Ok(())
+    }
+    pub fn clear_merge_intent(&self, id: &str) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM merge_intents WHERE task_id=?1", [id])?;
+        Ok(())
+    }
     pub fn forget_versions(&mut self, versions: &std::collections::HashSet<String>) -> Result<()> {
         for version in versions {
             self.connection
@@ -513,7 +552,6 @@ impl WorkspaceStore {
             app.task_evidence_scroll = saved.task_evidence_scroll;
             app.task_selection = saved.task_selection;
             app.review_version = saved.review_version;
-            app.follow_live = saved.follow_live;
             saved_selection = saved.selected;
         }
         let latest: Option<(String, String, String, String, Option<String>)> = self
@@ -546,7 +584,7 @@ impl WorkspaceStore {
                 app.status = "会话已中断 · 不自动续跑；未发送的纠正需重新提交".into();
             }
             app.run.status = match status.as_str() {
-                "Settled" => crate::rpc::RunStatus::Settled,
+                "Settled" | "Merged" => crate::rpc::RunStatus::Settled,
                 "Failed" => crate::rpc::RunStatus::Failed,
                 "Aborted" | "Interrupted" => crate::rpc::RunStatus::Aborted,
                 _ => crate::rpc::RunStatus::Idle,
@@ -689,7 +727,6 @@ impl WorkspaceStore {
             task_evidence_scroll: app.task_evidence_scroll,
             task_selection: app.task_selection.clone(),
             review_version: app.review_version.clone(),
-            follow_live: app.follow_live,
         };
         let encoded = serde_json::to_string(&saved)?;
         let changed_ui = self.last_ui.as_ref() != Some(&encoded);

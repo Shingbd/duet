@@ -164,6 +164,47 @@ fn start_delete_follow_shortcuts_are_configurable_contextual_and_confirmed() {
     );
 }
 
+#[test]
+fn merge_preview_requires_second_confirmation_and_retired_v_never_tracks() {
+    use duet_workbench::merge::MergePreview;
+    let mut app = App::empty(Keymap::default());
+    assert!(
+        app.keymap
+            .resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .is_none()
+    );
+    let legacy =
+        Keymap::from_overrides(BTreeMap::from([("follow_live".into(), vec!["v".into()])])).unwrap();
+    assert!(
+        legacy
+            .resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .is_none()
+    );
+    let p = MergePreview {
+        task_id: "1001".into(),
+        signature: "snapshot".into(),
+        source_head: "a".repeat(40),
+        branch: "refs/heads/master".into(),
+        delivery: "b".repeat(40),
+        commit: "c".repeat(40),
+        diff: "+new\n-old".into(),
+        paths: vec!["file".into()],
+        unverified: 1,
+    };
+    app.mode = Mode::MergePreview {
+        preview: p.clone(),
+        scroll: 0,
+    };
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::ConfirmMerge { .. }));
+    assert!(app.requested_merge.is_none());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.requested_merge.is_none());
+    app.mode = Mode::ConfirmMerge { preview: p };
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.requested_merge.is_some());
+}
+
 fn item() -> ReadingItem {
     ReadingItem {
         title: "test.rs".into(),

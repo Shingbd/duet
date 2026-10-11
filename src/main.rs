@@ -315,6 +315,53 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     app.status = format!("删除未完成：{e}");
                 }
             }
+            if let Some(id) = app.requested_merge_preview.take() {
+                let result = (|| -> Result<duet_workbench::merge::MergePreview> {
+                    ensure!(
+                        coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "还有活动编码/讨论，请等任务完全结束"
+                    );
+                    let repo = Repository::open(store.directory().parent().context("主项目缺失")?)?;
+                    let task = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .context("任务不存在")?;
+                    duet_workbench::merge::prepare(&repo, &store, task)
+                })();
+                match result {
+                    Ok(preview) => app.mode = Mode::MergePreview { preview, scroll: 0 },
+                    Err(e) => app.status = format!("不能预览合并：{e}"),
+                }
+            }
+            if let Some(preview) = app.requested_merge.take() {
+                let result = (|| -> Result<String> {
+                    ensure!(
+                        coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "仍有活动编码，拒绝合并"
+                    );
+                    if let Some(mut c) = coding.take() {
+                        c.stop(&mut app, &mut store)?;
+                    }
+                    let repo = Repository::open(store.directory().parent().context("主项目缺失")?)?;
+                    let task = app
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.id == preview.task_id)
+                        .context("任务不存在")?;
+                    let commit = duet_workbench::merge::apply(&repo, &mut store, task, &preview)?;
+                    app.tasks_revision = app.tasks_revision.wrapping_add(1);
+                    app.refresh_project(&repo)?;
+                    Ok(commit)
+                })();
+                match result {
+                    Ok(commit) => {
+                        app.status =
+                            format!("已合并到主项目 {} · 未自动测试、推送或部署", &commit[..12])
+                    }
+                    Err(e) => app.status = format!("合并未完成：{e}"),
+                }
+            }
             if let Some((id, confirmed_plan)) = app.requested_start.take() {
                 let result = (|| -> Result<CodingRun> {
                     ensure!(

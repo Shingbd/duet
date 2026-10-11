@@ -39,6 +39,13 @@ pub enum Mode {
     Message {
         text: String,
     },
+    MergePreview {
+        preview: crate::merge::MergePreview,
+        scroll: usize,
+    },
+    ConfirmMerge {
+        preview: crate::merge::MergePreview,
+    },
     ConfirmRead,
     ConfirmStart {
         task_id: String,
@@ -120,7 +127,8 @@ pub struct App {
     pub requested_start: Option<(String, String)>,
     pub requested_delete: Option<TaskSelection>,
     pub planning_only: bool,
-    pub follow_live: bool,
+    pub requested_merge_preview: Option<String>,
+    pub requested_merge: Option<crate::merge::MergePreview>,
     pub keymap: Keymap,
     pub quit: bool,
     pub notes: Vec<String>,
@@ -128,6 +136,7 @@ pub struct App {
 
 fn task_state_label(s: TaskState) -> &'static str {
     match s {
+        TaskState::Merged => "已合并",
         TaskState::Planning => "讨论规划中",
         TaskState::Ready => "计划待启动",
         TaskState::Running => "运行中",
@@ -201,7 +210,8 @@ impl App {
             requested_start: None,
             requested_delete: None,
             planning_only: true,
-            follow_live: true,
+            requested_merge_preview: None,
+            requested_merge: None,
             keymap,
             quit: false,
             notes: Vec::new(),
@@ -352,7 +362,6 @@ impl App {
         index: usize,
     ) -> Result<()> {
         let follows = self.view == View::Review
-            && self.follow_live
             && self.task_selection.as_ref().is_some_and(|s| {
                 s.task_id == task_id
                     && s.node_id.as_deref()
@@ -382,6 +391,47 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+    pub fn refresh_project(&mut self, repo: &Repository) -> Result<()> {
+        let snapshot = repo.baseline()?;
+        let files = repo.files(&snapshot)?;
+        let version = snapshot.commit.clone();
+        let current_path = self.current().map(|i| i.title.clone());
+        for path in files.iter().take(80) {
+            if !self
+                .items
+                .iter()
+                .any(|i| i.title == *path && i.version == version)
+            {
+                self.items.push(ReadingItem {
+                    title: path.clone(),
+                    version: version.clone(),
+                    intent: String::new(),
+                    diff: String::new(),
+                    change: None,
+                    code: repo
+                        .read(&snapshot, path)
+                        .unwrap_or_else(|e| format!("无法打开固定版本：{e}")),
+                    evidence: String::new(),
+                    explanation: String::new(),
+                    read: false,
+                    scroll: 0,
+                    evidence_scroll: 0,
+                });
+            }
+        }
+        self.project_version = Some(version.clone());
+        self.branch = version[..12].into();
+        if self.view == View::Project
+            && let Some(i) = self
+                .items
+                .iter()
+                .position(|i| Some(&i.title) == current_path.as_ref() && i.version == version)
+        {
+            self.selected = i;
+        }
+        self.content_revision = self.content_revision.wrapping_add(1);
         Ok(())
     }
     /// Current host RPC session, never external Pi availability or selected history.
@@ -485,9 +535,6 @@ impl App {
     }
     pub fn select_task_entry(&mut self, selection: TaskSelection) {
         self.task_selection = Some(selection);
-        self.follow_live = self
-            .selected_node()
-            .is_some_and(|n| matches!(n.execution, Execution::Running | Execution::Paused));
         self.review_version = if let Some(node) = self.selected_node() {
             node.review_snapshot().map(str::to_owned)
         } else {
@@ -716,11 +763,7 @@ impl App {
                 node_id: Some(node.contract.id.clone()),
             });
         }
-        if self.follow_live
-            && self
-                .selected_node()
-                .is_some_and(|n| matches!(n.execution, Execution::Running | Execution::Paused))
-        {
+        if self.selected_node().is_some() {
             self.review_version = self
                 .selected_node()
                 .and_then(|n| n.review_snapshot())
@@ -826,6 +869,39 @@ impl App {
             Mode::ConfirmDelete { selection } => {
                 if key.code == KeyCode::Enter {
                     self.requested_delete = Some(selection.clone());
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::MergePreview { preview, scroll } => {
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Browse,
+                    KeyCode::Enter => {
+                        self.mode = Mode::ConfirmMerge {
+                            preview: preview.clone(),
+                        }
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        *scroll = scroll
+                            .saturating_add(1)
+                            .min(preview.diff.lines().count().saturating_sub(1))
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::PageDown => {
+                        *scroll = scroll
+                            .saturating_add(12)
+                            .min(preview.diff.lines().count().saturating_sub(1))
+                    }
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(12),
+                    _ => {}
+                }
+                return;
+            }
+            Mode::ConfirmMerge { preview } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_merge = Some(preview.clone());
                     self.mode = Mode::Browse;
                 } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
@@ -1027,25 +1103,15 @@ impl App {
                 }
             }
             Action::DeleteSelected => self.status = "请在任务/审核界面选择节点或任务".into(),
-            Action::FollowLive if self.view == View::Review => {
-                self.follow_live = !self.follow_live;
-                if self.follow_live {
-                    self.review_version = self
-                        .selected_node()
-                        .and_then(|n| n.review_snapshot())
-                        .map(str::to_owned);
-                }
-                self.status = if self.follow_live {
-                    "跟随当前节点的固定预览"
-                } else {
-                    "固定当前版本，不跟随新快照"
-                }
-                .into();
-                if let Some(i) = self.changed_indices().first() {
-                    self.selected = *i;
+            Action::MergeTask if matches!(self.view, View::Tasks | View::Review) => {
+                if let Some(task) = self.selected_task() {
+                    match task.merge_ready() {
+                        Ok(()) => self.requested_merge_preview = Some(task.id.clone()),
+                        Err(e) => self.status = format!("不能合并：{e}"),
+                    }
                 }
             }
-            Action::FollowLive => self.status = "请在审核界面切换跟随".into(),
+            Action::MergeTask => self.status = "请在任务/审核界面选择任务再 g 合并".into(),
             Action::Pause => self.controls.push(RunControl::TogglePause),
             Action::Reply => {
                 if !self.agent_connected {
@@ -1095,7 +1161,7 @@ impl App {
             "approve-node" => self.request_node_approval(),
             "start-task" => self.act(Action::StartTask),
             "delete-selected" => self.act(Action::DeleteSelected),
-            "follow-live" => self.act(Action::FollowLive),
+            "merge-task" => self.act(Action::MergeTask),
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,

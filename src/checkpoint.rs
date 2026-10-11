@@ -56,9 +56,16 @@ impl Repository {
         &self.root
     }
 
-    fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String> {
+    fn git_output(&self, args: &[&str], index: Option<&Path>) -> Result<std::process::Output> {
         let mut command = Command::new("git");
-        command.arg("-C").arg(&self.root);
+        command.arg("-C").arg(&self.root).args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgSign=false",
+        ]);
         command
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
@@ -71,7 +78,10 @@ impl Repository {
         if let Some(index) = index {
             command.env("GIT_INDEX_FILE", index);
         }
-        let output = command.args(args).output().context("Git 执行失败")?;
+        command.args(args).output().context("Git 执行失败")
+    }
+    fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String> {
+        let output = self.git_output(args, index)?;
         ensure!(
             output.status.success(),
             "Git {}: {}",
@@ -81,6 +91,158 @@ impl Repository {
         String::from_utf8(output.stdout).context("Git 输出不是 UTF-8")
     }
 
+    pub fn tree(&self, commit: &str) -> Result<String> {
+        let commit = self.resolve_snapshot(commit)?.commit;
+        Ok(self
+            .git(&["rev-parse", &format!("{commit}^{{tree}}")], None)?
+            .trim()
+            .into())
+    }
+    pub fn branch_ref(&self) -> Result<String> {
+        let reference = self
+            .git(&["symbolic-ref", "HEAD"], None)
+            .context("主项目为 detached HEAD，拒绝自动合并")?;
+        ensure!(
+            reference.trim().starts_with("refs/heads/"),
+            "主项目必须在普通分支"
+        );
+        Ok(reference.trim().into())
+    }
+    pub fn merge_guard(&self) -> Result<()> {
+        ensure!(
+            !self.is_dirty()?,
+            "主项目存在未提交/暂存/未跟踪文件，请先自行处理；不会自动 stash"
+        );
+        for name in [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "REBASE_HEAD",
+            "rebase-apply",
+            "rebase-merge",
+            "sequencer",
+        ] {
+            let path = self.git(&["rev-parse", "--git-path", name], None)?;
+            ensure!(
+                !self.root.join(path.trim()).exists(),
+                "主项目正在 merge/rebase/cherry-pick/revert，拒绝合并"
+            );
+        }
+        let flags = self.git(&["ls-files", "-v"], None)?;
+        ensure!(
+            !flags
+                .lines()
+                .any(|l| l.starts_with("S ")
+                    || l.as_bytes().first().is_some_and(u8::is_ascii_lowercase)),
+            "主项目含 skip-worktree/assume-unchanged，不能可靠检查人工文件"
+        );
+        let custom = self.git_output(
+            &[
+                "config",
+                "--get-regexp",
+                r"^(merge\..*\.driver|filter\..*\.(smudge|process))$",
+            ],
+            None,
+        )?;
+        ensure!(
+            custom.status.code() == Some(1),
+            "自定义 merge driver/checkout filter 暂不支持受控合并；避免自动执行仓库程序"
+        );
+        Ok(())
+    }
+    pub fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool> {
+        let output = self.git_output(&["merge-base", "--is-ancestor", older, newer], None)?;
+        ensure!(
+            matches!(output.status.code(), Some(0 | 1)),
+            "无法检查提交祖先"
+        );
+        Ok(output.status.success())
+    }
+    pub fn prepare_integration(
+        &self,
+        source: &str,
+        delivery: &str,
+        task: &str,
+    ) -> Result<Snapshot> {
+        let output = self.git_output(&["merge-tree", "--write-tree", source, delivery], None)?;
+        ensure!(
+            output.status.success(),
+            "集成冲突，主项目未变，请先处理候选：{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let out = String::from_utf8(output.stdout)?;
+        let tree = out.lines().next().context("Git 未生成集成树")?;
+        ensure!(
+            tree.bytes().all(|b| b.is_ascii_hexdigit()) && matches!(tree.len(), 40 | 64),
+            "无效集成树"
+        );
+        ensure!(
+            tree != self.tree(source)?,
+            "候选已包含在主项目或集成无差异，无需重复合并"
+        );
+        let commit = self
+            .git(
+                &[
+                    "commit-tree",
+                    tree,
+                    "-p",
+                    source,
+                    "-p",
+                    delivery,
+                    "-m",
+                    &format!("Merge approved Duet task {task} (verification separately recorded)"),
+                ],
+                None,
+            )?
+            .trim()
+            .to_owned();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let reference = format!("refs/duet/integrations/{task}/{nonce}");
+        self.git(&["update-ref", &reference, &commit, ""], None)?;
+        Ok(Snapshot {
+            commit,
+            parent: Some(source.into()),
+            reference: Some(reference),
+        })
+    }
+    pub fn integration_diff(&self, source: &str, commit: &str) -> Result<String> {
+        self.git(
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                source,
+                commit,
+                "--",
+            ],
+            None,
+        )
+    }
+    pub fn fast_forward_integration(&self, source: &str, branch: &str, commit: &str) -> Result<()> {
+        self.merge_guard()?;
+        ensure!(
+            self.baseline()?.commit == source && self.branch_ref()? == branch,
+            "主项目 HEAD/分支在预览后改变，请重新预览"
+        );
+        self.git(
+            &[
+                "merge",
+                "--ff-only",
+                "--no-edit",
+                "--no-autostash",
+                "--no-overwrite-ignore",
+                commit,
+            ],
+            None,
+        )
+        .context("合并未完成，请检查主项目 Git 状态；不会 reset/覆盖恢复")?;
+        ensure!(
+            self.baseline()?.commit == commit,
+            "合并结果与确认版本不一致"
+        );
+        Ok(())
+    }
     pub fn create_worktree(&self, path: &Path, branch: &str) -> Result<()> {
         let path = path.to_str().context("worktree 路径不是 UTF-8")?;
         let baseline = self.baseline()?;
