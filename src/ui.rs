@@ -366,48 +366,46 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         ),
         Mode::ConfirmStart { task_id, .. } => {
             let task = app.tasks.iter().find(|t| &t.id == task_id);
-            let mut lines = vec![
-                Line::from("授权剩余节点顺序执行（非同时启动），已实现节点不重跑。"),
-                Line::from("只修改独立候选工作区；不自动测试或合并。"),
-                Line::from("代码可能外发；文件工具并非 OS 安全沙箱。"),
-            ];
+            let mut lines = Vec::new();
             if let Some(t) = task {
                 let resume = t.resume_index().ok();
-                let done = t
-                    .nodes
-                    .iter()
-                    .filter(|n| n.execution == crate::nodes::Execution::Implemented)
-                    .count();
+                // Always keep the actual start visible, including long plans.
                 if let Some(index) = resume {
-                    lines.insert(
-                        0,
-                        Line::from(format!(
-                            "从 {} · {} 继续；跳过 {} 个已实现节点",
-                            t.nodes[index].contract.id, t.nodes[index].contract.title, done
-                        )),
-                    );
+                    lines.push(Line::from(Span::styled(
+                        format!("▶ {}", safe_text(&t.nodes[index].contract.title)),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(""));
                 }
-                for (index, n) in t.nodes.iter().enumerate().take(8) {
-                    let state = if n.execution == crate::nodes::Execution::Implemented {
-                        "已实现·跳过"
+                let order = t
+                    .plan
+                    .as_ref()
+                    .and_then(|p| p.order().ok())
+                    .unwrap_or_else(|| (0..t.nodes.len()).collect());
+                for index in order.into_iter().take(8) {
+                    let n = &t.nodes[index];
+                    let (symbol, color) = if n.execution == crate::nodes::Execution::Implemented {
+                        ("✓", theme.good)
                     } else if Some(index) == resume {
-                        "本次起点"
+                        ("▶", theme.accent)
                     } else {
-                        "后续顺序执行"
+                        ("○", theme.muted)
                     };
-                    lines.push(Line::from(format!(
-                        "[{state}] {} · {}",
-                        n.contract.id, n.contract.title
+                    lines.push(Line::from(Span::styled(
+                        format!("{symbol} {}", safe_text(&n.contract.title)),
+                        Style::default().fg(color),
                     )));
                 }
                 if t.nodes.len() > 8 {
-                    lines.push(Line::from(format!(
-                        "另有 {} 个节点，完整契约在任务树中查看",
-                        t.nodes.len() - 8
-                    )));
+                    lines.push(Line::from(format!("… +{}", t.nodes.len() - 8)));
                 }
             }
-            lines.push(Line::from("Enter 确认继续未完成节点 · Esc 取消"));
+            lines.push(Line::from(""));
+            lines.push(Line::from("授权模型写入候选；不自动测试/合并。"));
+            lines.push(Line::from("代码可能外发；worktree 不是安全沙箱。"));
+            lines.push(Line::from("Enter ▶     Esc ×"));
             popup(frame, theme, " 启动 / 继续已有任务计划 ", lines, 100, 18);
         }
         Mode::ConfirmDelete { selection } => popup(

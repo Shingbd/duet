@@ -272,9 +272,11 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
         .map(|c| c.symbol())
         .collect::<String>();
     let rendered = rendered.replace(' ', "");
-    assert!(rendered.contains("从n3"));
-    assert!(rendered.contains("跳过2"));
-    assert!(rendered.contains("[已实现·跳过]n1"));
+    assert!(rendered.contains("▶node3"));
+    assert!(rendered.contains("✓node1"));
+    assert!(rendered.contains("✓node2"));
+    assert!(!rendered.contains("已实现·跳过"));
+    assert!(!rendered.contains("后续顺序执行"));
     assert!(!run.worktree.join("file3.txt").exists());
     app.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
