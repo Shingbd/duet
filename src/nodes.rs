@@ -480,10 +480,6 @@ impl TaskRecord {
             "节点与计划不一致，拒绝启动"
         );
         ensure!(
-            self.state != TaskState::Cancelled,
-            "任务已取消，请先讨论修订计划"
-        );
-        ensure!(
             self.nodes
                 .iter()
                 .any(|n| n.execution != Execution::Implemented),

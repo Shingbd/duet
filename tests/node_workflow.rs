@@ -241,6 +241,46 @@ fn cancelling_at_node_boundary_does_not_resume_pending_nodes() {
         run.interact(RunControl::Resume, &mut app, &mut store)
             .is_err()
     );
+    // Cancellation stops execution, not the contract. Backpressure still applies.
+    assert!(app.tasks[0].startable().is_err());
+    for node in &mut app.tasks[0].nodes[..2] {
+        let cp = node.checkpoint().unwrap().to_owned();
+        node.approve(&cp).unwrap();
+    }
+    assert!(app.tasks[0].startable().is_ok());
+    app.act(duet_workbench::keymap::Action::Tasks);
+    app.act(duet_workbench::keymap::Action::StartTask);
+    assert!(matches!(
+        app.mode,
+        duet_workbench::app::Mode::ConfirmStart { .. }
+    ));
+    assert!(app.requested_start.is_none());
+    assert!(!run.worktree.join("file3.txt").exists());
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(app.requested_start.take().unwrap().0, run.id);
+    let id = run.id.clone();
+    run.stop(&mut app, &mut store).unwrap();
+    drop(run);
+    let mut continued = CodingRun::open_existing(
+        &id,
+        &fake,
+        None,
+        false,
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut continued, &mut app, &mut store);
+    assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.tasks[0].state, TaskState::Implemented);
+    assert_eq!(app.tasks[0].nodes[0].review, Review::Approved);
+    assert_eq!(app.tasks[0].nodes[1].review, Review::Approved);
+    assert_eq!(app.tasks[0].nodes[2].execution, Execution::Implemented);
+    continued.stop(&mut app, &mut store).unwrap();
 }
 #[test]
 fn task_sidebar_contains_nodes_not_files_and_review_is_node_scoped() {
