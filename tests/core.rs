@@ -1,13 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duet_workbench::{
-    app::{App, Mode, Page, Panel, ReadingItem},
+    app::{App, Mode, Page, Panel, ReadingItem, TaskSelection},
     keymap::{Action, Keymap},
+    nodes::{TaskRecord, TaskState},
     rpc::{MAX_RECORD_BYTES, RunState, RunStatus, read_record},
     ui,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use std::{collections::BTreeMap, io::Cursor};
+use unicode_width::UnicodeWidthStr;
 
 #[test]
 fn approval_shortcut_is_configurable_contextual_and_never_fires_in_input_modes() {
@@ -315,6 +317,145 @@ fn empty_workspace_has_no_sample_data_and_navigation_is_safe() {
     assert!(!output.contains("DEMO"));
     assert_eq!(app.body(), "暂无内容");
     assert!(output.contains("DUET"));
+}
+
+// Wide enough to inspect complete status phrases without asserting a screen snapshot.
+fn render_status_rows(app: &App) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(200)
+        .map(|row| {
+            let mut text = String::new();
+            let mut column = 0;
+            while column < row.len() {
+                let symbol = row[column].symbol();
+                text.push_str(symbol);
+                // Wide Chinese glyphs occupy continuation cells, not extra spaces.
+                column += symbol.width().max(1);
+            }
+            text
+        })
+        .collect()
+}
+
+fn pi_session_cases() -> Vec<(bool, RunStatus, &'static str)> {
+    vec![
+        (false, RunStatus::Idle, "Pi 会话未启动"),
+        (false, RunStatus::Running, "Pi 会话未连接 · 运行中"),
+        (false, RunStatus::Pausing, "Pi 会话未连接 · 暂停中（等待确认）"),
+        (false, RunStatus::Paused, "Pi 会话未连接 · 已暂停"),
+        (false, RunStatus::Cancelling, "Pi 会话未连接 · 取消中"),
+        (false, RunStatus::Settled, "Pi 会话已结束 · 本轮结束待审核"),
+        (false, RunStatus::Aborted, "Pi 会话已结束 · 已取消"),
+        (false, RunStatus::Failed, "Pi 会话失败 · 未连接"),
+        (true, RunStatus::Idle, "Pi 会话已连接 · 空闲"),
+        (true, RunStatus::Running, "Pi 会话已连接 · 运行中"),
+        (true, RunStatus::Pausing, "Pi 会话已连接 · 暂停中（等待确认）"),
+        (true, RunStatus::Paused, "Pi 会话已连接 · 已暂停"),
+        (true, RunStatus::Cancelling, "Pi 会话已连接 · 取消中"),
+        (true, RunStatus::Settled, "Pi 会话已连接 · 空闲 · 本轮结束待审核"),
+        (true, RunStatus::Aborted, "Pi 会话已连接 · 空闲 · 已取消"),
+        (true, RunStatus::Failed, "Pi 会话失败 · 已连接"),
+    ]
+}
+
+#[test]
+fn pi_session_mapping_distinguishes_connection_and_run_state() {
+    let initial = App::empty(Keymap::default());
+    assert!(!initial.agent_connected);
+    assert_eq!(initial.run.status, RunStatus::Idle);
+    assert_eq!(initial.pi_session_label(), "Pi 会话未启动");
+
+    for (connected, status, expected) in pi_session_cases() {
+        let mut app = App::empty(Keymap::default());
+        app.agent_connected = connected;
+        app.run.status = status;
+        assert_eq!(app.pi_session_label(), expected);
+        assert!(!app.pi_session_label().contains("Pi 未连接"));
+    }
+}
+
+#[test]
+fn pi_session_header_renders_each_state_without_debug_or_availability_claims() {
+    for (connected, status, expected) in pi_session_cases() {
+        let mut app = App::empty(Keymap::default());
+        app.branch = "fixture-version".into();
+        app.agent_connected = connected;
+        app.run.status = status;
+        let rows = render_status_rows(&app);
+        assert!(rows[0].contains("项目只读浏览"));
+        assert!(rows[1].contains(expected), "expected {expected}: {}", rows[1]);
+        assert!(!rows[1].contains("Pi 未连接"));
+        assert!(!rows[1].contains(&format!("{:?}", app.run.status)));
+        if !connected {
+            assert!(!rows[1].contains("已连接"));
+        }
+    }
+}
+
+#[test]
+fn historical_sessions_and_task_selection_do_not_connect_current_workbench() {
+    let mut app = App::empty(Keymap::default());
+    let mut ended = TaskRecord::legacy("ended", "旧任务", "historical-session-1");
+    ended.state = TaskState::Implemented;
+    let mut failed = TaskRecord::legacy("failed", "旧失败任务", "historical-session-2");
+    failed.state = TaskState::Failed;
+    let running = TaskRecord::legacy("running", "旧运行记录", "historical-session-3");
+    app.tasks = vec![ended, failed, running];
+    assert_eq!(app.pi_session_label(), "Pi 会话未启动");
+    assert!(render_status_rows(&app)[1].contains("Pi 会话未启动"));
+
+    for id in ["ended", "failed", "running", "ended"] {
+        app.select_task_entry(TaskSelection {
+            task_id: id.into(),
+            node_id: None,
+        });
+        assert_eq!(app.selected_task().unwrap().id, id);
+        assert!(!app.agent_connected);
+        assert_eq!(app.run.status, RunStatus::Idle);
+        assert_eq!(app.pi_session_label(), "Pi 会话未启动");
+        let rows = render_status_rows(&app);
+        assert!(rows[1].contains("Pi 会话未启动"));
+        assert!(!rows[1].contains("已连接"));
+        assert!(!rows[1].contains("Pi 未连接"));
+    }
+}
+
+#[test]
+fn failed_session_keeps_status_and_sanitizes_error_details() {
+    let error = "模型错误\x1b[2J\x07：请求被拒绝";
+    let safe_error = "模型错误�[2J�：请求被拒绝";
+    assert_eq!(ui::safe_text(error), safe_error);
+    for connected in [false, true] {
+        // Exercise both an error already in the status entry and fallback details.
+        for status in [
+            "节点已停止 · 已有改动保留".to_owned(),
+            format!("运行失败 · {error}"),
+        ] {
+            let mut app = App::empty(Keymap::default());
+            app.agent_connected = connected;
+            app.run.status = RunStatus::Failed;
+            app.run.error = Some(error.into());
+            app.status = status.clone();
+            assert!(app.pi_session_label().starts_with("Pi 会话失败"));
+            let rows = render_status_rows(&app);
+            assert!(rows[1].contains(app.pi_session_label()));
+            assert!(!rows[1].contains("Pi 会话未启动"));
+            assert!(!rows[1].contains("Pi 未连接"));
+            let footer = &rows[28];
+            assert!(footer.contains(&ui::safe_text(&status)));
+            assert!(footer.contains(safe_error));
+            assert_eq!(footer.matches("请求被拒绝").count(), 1);
+            assert!(!rows.iter().any(|row| row.chars().any(char::is_control)));
+            // Rendering must not mutate or discard the underlying failure.
+            assert_eq!(app.run.error.as_deref(), Some(error));
+            assert_eq!(app.status, status);
+        }
+    }
 }
 
 fn key(code: KeyCode) -> KeyEvent {

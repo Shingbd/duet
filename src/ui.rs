@@ -97,10 +97,8 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         .split(area);
     let badge = if app.branch.is_empty() {
         "未打开项目"
-    } else if app.agent_connected {
-        "独立工作区"
     } else {
-        "只读"
+        "项目只读浏览"
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -179,6 +177,18 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             Panel::Evidence => evidence(frame, app, body, theme),
         }
     }
+    // Keep the existing status entry, including failure details even when the
+    // workflow's status message only reports that a node has stopped.
+    let status = if app.run.status == crate::rpc::RunStatus::Failed {
+        match app.run.error.as_deref() {
+            Some(error) if !app.status.contains(error) => {
+                format!("{} · 错误：{error}", app.status)
+            }
+            _ => app.status.clone(),
+        }
+    } else {
+        app.status.clone()
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -190,7 +200,7 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                         Panel::Reader => "内容",
                         Panel::Evidence => "说明 / 验证",
                     },
-                    safe_text(&app.status)
+                    safe_text(&status)
                 ),
                 Style::default().fg(theme.warning),
             )),

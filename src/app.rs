@@ -175,6 +175,29 @@ fn review_label(s: Review) -> &'static str {
 }
 
 impl App {
+    /// Describes only this workbench's current RPC session, not external Pi
+    /// availability or the selected historical task. This never starts a session.
+    pub fn pi_session_label(&self) -> &'static str {
+        match (self.agent_connected, &self.run.status) {
+            (false, RunStatus::Idle) => "Pi 会话未启动",
+            (false, RunStatus::Settled) => "Pi 会话已结束 · 本轮结束待审核",
+            (false, RunStatus::Aborted) => "Pi 会话已结束 · 已取消",
+            (false, RunStatus::Failed) => "Pi 会话失败 · 未连接",
+            (false, RunStatus::Running) => "Pi 会话未连接 · 运行中",
+            (false, RunStatus::Pausing) => "Pi 会话未连接 · 暂停中（等待确认）",
+            (false, RunStatus::Paused) => "Pi 会话未连接 · 已暂停",
+            (false, RunStatus::Cancelling) => "Pi 会话未连接 · 取消中",
+            (true, RunStatus::Idle) => "Pi 会话已连接 · 空闲",
+            (true, RunStatus::Running) => "Pi 会话已连接 · 运行中",
+            (true, RunStatus::Pausing) => "Pi 会话已连接 · 暂停中（等待确认）",
+            (true, RunStatus::Paused) => "Pi 会话已连接 · 已暂停",
+            (true, RunStatus::Cancelling) => "Pi 会话已连接 · 取消中",
+            (true, RunStatus::Settled) => "Pi 会话已连接 · 空闲 · 本轮结束待审核",
+            (true, RunStatus::Aborted) => "Pi 会话已连接 · 空闲 · 已取消",
+            (true, RunStatus::Failed) => "Pi 会话失败 · 已连接",
+        }
+    }
+
     pub fn empty(keymap: Keymap) -> Self {
         Self {
             name: "工作台".into(),
