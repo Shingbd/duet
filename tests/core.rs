@@ -61,13 +61,13 @@ fn pi_label_describes_current_host_session_not_external_pi_availability() {
     assert_eq!(app.pi_session_label(), "Pi 会话未启动");
     app.agent_connected = true;
     app.run.status = RunStatus::Running;
-    assert_eq!(app.pi_session_label(), "Pi 会话运行中");
+    assert_eq!(app.pi_session_label(), "Pi 会话已连接 · 运行中");
     app.run.status = RunStatus::Settled;
     assert!(app.pi_session_label().contains("空闲"));
     app.agent_connected = false;
-    assert_eq!(app.pi_session_label(), "Pi 会话已结束");
+    assert_eq!(app.pi_session_label(), "Pi 会话已结束 · 本轮结束待审核");
     app.run.status = RunStatus::Failed;
-    assert_eq!(app.pi_session_label(), "Pi 会话失败");
+    assert_eq!(app.pi_session_label(), "Pi 会话失败 · 未连接");
     app.tasks.push(duet_workbench::nodes::TaskRecord::legacy(
         "history",
         "old task",
@@ -78,7 +78,7 @@ fn pi_label_describes_current_host_session_not_external_pi_availability() {
         node_id: None,
     });
     app.act(Action::Tasks);
-    assert_eq!(app.pi_session_label(), "Pi 会话失败");
+    assert_eq!(app.pi_session_label(), "Pi 会话失败 · 未连接");
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &app)).unwrap();
     let rendered = terminal
@@ -346,7 +346,11 @@ fn pi_session_cases() -> Vec<(bool, RunStatus, &'static str)> {
     vec![
         (false, RunStatus::Idle, "Pi 会话未启动"),
         (false, RunStatus::Running, "Pi 会话未连接 · 运行中"),
-        (false, RunStatus::Pausing, "Pi 会话未连接 · 暂停中（等待确认）"),
+        (
+            false,
+            RunStatus::Pausing,
+            "Pi 会话未连接 · 暂停中（等待确认）",
+        ),
         (false, RunStatus::Paused, "Pi 会话未连接 · 已暂停"),
         (false, RunStatus::Cancelling, "Pi 会话未连接 · 取消中"),
         (false, RunStatus::Settled, "Pi 会话已结束 · 本轮结束待审核"),
@@ -354,10 +358,18 @@ fn pi_session_cases() -> Vec<(bool, RunStatus, &'static str)> {
         (false, RunStatus::Failed, "Pi 会话失败 · 未连接"),
         (true, RunStatus::Idle, "Pi 会话已连接 · 空闲"),
         (true, RunStatus::Running, "Pi 会话已连接 · 运行中"),
-        (true, RunStatus::Pausing, "Pi 会话已连接 · 暂停中（等待确认）"),
+        (
+            true,
+            RunStatus::Pausing,
+            "Pi 会话已连接 · 暂停中（等待确认）",
+        ),
         (true, RunStatus::Paused, "Pi 会话已连接 · 已暂停"),
         (true, RunStatus::Cancelling, "Pi 会话已连接 · 取消中"),
-        (true, RunStatus::Settled, "Pi 会话已连接 · 空闲 · 本轮结束待审核"),
+        (
+            true,
+            RunStatus::Settled,
+            "Pi 会话已连接 · 空闲 · 本轮结束待审核",
+        ),
         (true, RunStatus::Aborted, "Pi 会话已连接 · 空闲 · 已取消"),
         (true, RunStatus::Failed, "Pi 会话失败 · 已连接"),
     ]
@@ -388,7 +400,11 @@ fn pi_session_header_renders_each_state_without_debug_or_availability_claims() {
         app.run.status = status;
         let rows = render_status_rows(&app);
         assert!(rows[0].contains("项目只读浏览"));
-        assert!(rows[1].contains(expected), "expected {expected}: {}", rows[1]);
+        assert!(
+            rows[1].contains(expected),
+            "expected {expected}: {}",
+            rows[1]
+        );
         assert!(!rows[1].contains("Pi 未连接"));
         assert!(!rows[1].contains(&format!("{:?}", app.run.status)));
         if !connected {

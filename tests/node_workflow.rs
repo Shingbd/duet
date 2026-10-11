@@ -58,6 +58,10 @@ for line in sys.stdin:
  elif r['type']=='prompt':
   response['data']={{'disposition':'started'}}; emit(response); emit({{'type':'agent_start'}})
   if planner:
+   if mode=='quota' and not pathlib.Path('quota-marker').exists():
+    pathlib.Path('quota-marker').write_text('failed')
+    emit({{'type':'message_end','message':{{'role':'assistant','content':[],'stopReason':'error','errorMessage':'Codex error: The usage limit has been reached'}}}})
+    emit({{'type':'agent_settled','aborted':False}});continue
    nodes=[{{'id':'n'+str(i),'title':'node '+str(i),'objective':'implement '+str(i),'scope':['file'+str(i)+'.txt'],'boundaries':['only implement this node; preserve other behavior'],'implementation':'write the requested file','constraints':['no tests or merge'],'dependencies':[] if i==1 else ['n'+str(i-1)],'acceptance':['file content is correct']}} for i in range(1,count+1)]
    output=json.dumps({{'schema_version':1,'objective':'goal','constraints':['keep baseline'],'acceptance':['all files correct'],'nodes':nodes}}) if mode!='invalid' else 'not json'
    if mode=='clarify' and 'Rust' not in r['message']: output=json.dumps({{'reply':'请明确语言和架构边界。','plan':None}})
@@ -852,3 +856,126 @@ fn deletion_refuses_tampered_candidate_that_points_to_main_project() {
 }
 
 use duet_workbench::nodes::TaskState;
+
+#[test]
+fn legacy_failed_discussion_recovers_error_from_local_session_without_model_call() {
+    let (dir, fake, mut store, mut app) = setup(1, "quota");
+    let mut run = CodingRun::start_drafting(
+        dir.path(),
+        &fake,
+        None,
+        "requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    drop(run);
+    let task = &mut app.tasks[0];
+    task.failure = None;
+    task.state = TaskState::Ready;
+    store.save_task(task).unwrap();
+    let session = task.sessions.last().unwrap();
+    fs::write(store.directory().join("sessions").join(format!("test_{session}.jsonl")),r#"{"message":{"role":"assistant","stopReason":"error","errorMessage":"Codex error: The usage limit has been reached"}}"#).unwrap();
+    drop(store);
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    let tasks = store.tasks().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].state, TaskState::Failed);
+    assert!(
+        tasks[0]
+            .failure
+            .as_ref()
+            .unwrap()
+            .reason
+            .contains("usage limit")
+    );
+    assert!(tasks[0].plan.is_none());
+    assert_eq!(tasks[0].sessions.len(), 1);
+}
+
+#[test]
+fn quota_failure_is_persisted_and_confirmed_retry_reuses_task_after_restart() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use duet_workbench::{
+        app::Mode,
+        keymap::Action,
+        nodes::{FailureStage, TaskState},
+    };
+    let (dir, fake, mut store, mut app) = setup(1, "quota");
+    let mut run = CodingRun::start_drafting(
+        dir.path(),
+        &fake,
+        None,
+        "original requirement",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    let id = run.id.clone();
+    assert_eq!(app.tasks[0].state, TaskState::Failed);
+    assert_eq!(
+        app.tasks[0].failure.as_ref().unwrap().stage,
+        FailureStage::Discussion
+    );
+    assert!(
+        app.tasks[0]
+            .failure
+            .as_ref()
+            .unwrap()
+            .reason
+            .contains("usage limit")
+    );
+    assert!(app.tasks[0].plan.is_none());
+    assert!(
+        app.task_lines()
+            .iter()
+            .any(|(l, _)| l.contains("usage limit"))
+    );
+    app.act(Action::RetryTask);
+    assert!(matches!(app.mode, Mode::ConfirmRetry { .. }));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.requested_retry.is_none());
+    store.save(&app).unwrap();
+    drop(run);
+    drop(store);
+    let mut store = WorkspaceStore::open(dir.path()).unwrap();
+    store.restore(&mut app).unwrap();
+    assert_eq!(app.tasks[0].state, TaskState::Failed);
+    app.act(Action::RetryTask);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.requested_retry.take().unwrap().0, id);
+    let mut retry = CodingRun::open_existing(
+        &id,
+        &fake,
+        None,
+        true,
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    retry
+        .discuss("original requirement", &mut app, &mut store)
+        .unwrap();
+    poll(&mut retry, &mut app, &mut store);
+    assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.tasks[0].id, id);
+    assert_eq!(app.tasks[0].state, TaskState::Ready);
+    assert!(app.tasks[0].failure.is_none());
+    assert!(app.tasks[0].plan.is_some());
+    assert!(
+        app.tasks[0]
+            .nodes
+            .iter()
+            .all(|n| n.execution == Execution::Planned)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("base.txt")).unwrap(),
+        "baseline\n"
+    );
+    retry.stop(&mut app, &mut store).unwrap();
+}

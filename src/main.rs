@@ -315,6 +315,74 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     app.status = format!("删除未完成：{e}");
                 }
             }
+            if let Some((id, fingerprint)) = app.requested_retry.take() {
+                let result = (|| -> Result<()> {
+                    ensure!(
+                        coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "仍有活动任务，请等待结束后重试"
+                    );
+                    let task = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .context("任务不存在")?;
+                    ensure!(
+                        task.state == duet_workbench::nodes::TaskState::Failed
+                            && serde_json::to_string(&task.failure)? == fingerprint,
+                        "失败状态已变化，请重新确认"
+                    );
+                    let failure = task.failure.clone().context("失败记录缺失")?;
+                    ensure!(
+                        failure.stage == duet_workbench::nodes::FailureStage::Discussion,
+                        "编码重试需重新确认写入计划"
+                    );
+                    let message = task
+                        .history
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == "user" && !m.content.trim().is_empty())
+                        .map(|m| m.content.clone())
+                        .unwrap_or_else(|| task.prompt.clone());
+                    if let Some(mut c) = coding.take() {
+                        c.stop(&mut app, &mut store)?;
+                    }
+                    app.select_task_entry(duet_workbench::app::TaskSelection {
+                        task_id: id.clone(),
+                        node_id: failure.node_id,
+                    });
+                    let mut c = CodingRun::open_existing(
+                        &id,
+                        Path::new("pi"),
+                        None,
+                        true,
+                        Duration::from_secs(600),
+                        &mut store,
+                        &mut app,
+                    )?;
+                    if let Err(e) = c.discuss(&message, &mut app, &mut store) {
+                        let _ = c.stop(&mut app, &mut store);
+                        return Err(e);
+                    }
+                    coding = Some(c);
+                    Ok(())
+                })();
+                if let Err(e) = result {
+                    app.status = format!("重试未完成：{e}");
+                    app.run.status = duet_workbench::rpc::RunStatus::Failed;
+                    app.run.error = Some(e.to_string());
+                    if let Some(task) = app.tasks.iter_mut().find(|t| t.id == id) {
+                        task.state = duet_workbench::nodes::TaskState::Failed;
+                        task.failure = Some(duet_workbench::nodes::TaskFailure {
+                            stage: duet_workbench::nodes::FailureStage::Discussion,
+                            reason: e.to_string().chars().take(2000).collect(),
+                            node_id: task.failure.as_ref().and_then(|f| f.node_id.clone()),
+                        });
+                        store.save_task(task)?;
+                        store.finish_run(&id, "Failed", task.checkpoint.as_deref())?;
+                        app.content_revision = app.content_revision.wrapping_add(1);
+                    }
+                }
+            }
             if let Some(id) = app.requested_merge_preview.take() {
                 let result = (|| -> Result<duet_workbench::merge::MergePreview> {
                     ensure!(

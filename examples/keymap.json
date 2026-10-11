@@ -7,5 +7,6 @@
   "approve_node": ["a"],
   "start_task": ["s"],
   "delete_selected": ["d"],
-  "merge_task": ["g"]
+  "merge_task": ["g"],
+  "retry_task": ["r"]
 }

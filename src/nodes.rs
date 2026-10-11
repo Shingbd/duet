@@ -326,6 +326,17 @@ pub struct MergeReceipt {
     pub delivery: String,
     pub commit: String,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureStage {
+    Discussion,
+    Implementation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskFailure {
+    pub stage: FailureStage,
+    pub reason: String,
+    pub node_id: Option<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub id: String,
@@ -341,6 +352,8 @@ pub struct TaskRecord {
     pub plan_revisions: Vec<(TaskPlan, Vec<NodeRecord>)>,
     #[serde(default)]
     pub discussion_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<TaskFailure>,
     #[serde(default)]
     pub merged: Option<MergeReceipt>,
     #[serde(default)]
@@ -361,6 +374,7 @@ impl TaskRecord {
             plan: None,
             plan_revisions: Vec::new(),
             discussion_pending: false,
+            failure: None,
             merged: None,
             nodes: Vec::new(),
             history: Vec::new(),

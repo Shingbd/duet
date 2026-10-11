@@ -54,6 +54,10 @@ pub enum Mode {
     ConfirmDelete {
         selection: TaskSelection,
     },
+    ConfirmRetry {
+        task_id: String,
+        failure: String,
+    },
     ConfirmCode {
         prompt: String,
     },
@@ -127,6 +131,7 @@ pub struct App {
     pub requested_start: Option<(String, String)>,
     pub requested_delete: Option<TaskSelection>,
     pub planning_only: bool,
+    pub requested_retry: Option<(String, String)>,
     pub requested_merge_preview: Option<String>,
     pub requested_merge: Option<crate::merge::MergePreview>,
     pub keymap: Keymap,
@@ -233,6 +238,7 @@ impl App {
             requested_start: None,
             requested_delete: None,
             planning_only: true,
+            requested_retry: None,
             requested_merge_preview: None,
             requested_merge: None,
             keymap,
@@ -456,23 +462,6 @@ impl App {
         }
         self.content_revision = self.content_revision.wrapping_add(1);
         Ok(())
-    }
-    /// Current host RPC session, never external Pi availability or selected history.
-    pub fn pi_session_label(&self) -> &'static str {
-        match (&self.run.status, self.agent_connected) {
-            (RunStatus::Failed, _) => "Pi 会话失败",
-            (RunStatus::Idle, false) => "Pi 会话未启动",
-            (RunStatus::Settled, false) => "Pi 会话已结束",
-            (RunStatus::Aborted, false) => "Pi 会话已结束 · 已中断",
-            (RunStatus::Running, true) => "Pi 会话运行中",
-            (RunStatus::Pausing, true) => "Pi 会话暂停中",
-            (RunStatus::Paused, true) => "Pi 会话已暂停",
-            (RunStatus::Cancelling, true) => "Pi 会话取消中",
-            (RunStatus::Settled, true) => "Pi 会话空闲 · 本轮结束",
-            (RunStatus::Idle, true) => "Pi 会话空闲",
-            (RunStatus::Aborted, true) => "Pi 会话已中断",
-            (_, false) => "Pi 当前会话未连接",
-        }
     }
     pub fn selected_task(&self) -> Option<&TaskRecord> {
         self.task_selection
@@ -931,6 +920,15 @@ impl App {
                 }
                 return;
             }
+            Mode::ConfirmRetry { task_id, failure } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_retry = Some((task_id.clone(), failure.clone()));
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
             Mode::ConfirmCode { prompt } => {
                 if key.code == KeyCode::Enter {
                     self.requested_task = Some(prompt.clone());
@@ -1126,6 +1124,23 @@ impl App {
                 }
             }
             Action::DeleteSelected => self.status = "请在任务/审核界面选择节点或任务".into(),
+            Action::RetryTask if matches!(self.view, View::Tasks | View::Review) => {
+                if let Some(task) = self.selected_task() {
+                    if task.state != TaskState::Failed || task.failure.is_none() {
+                        self.status = "所选任务没有可重试的失败；已有计划可用 s 继续".into();
+                    } else if task.failure.as_ref().unwrap().stage
+                        == crate::nodes::FailureStage::Discussion
+                    {
+                        self.mode = Mode::ConfirmRetry {
+                            task_id: task.id.clone(),
+                            failure: serde_json::to_string(&task.failure).unwrap(),
+                        };
+                    } else {
+                        self.act(Action::StartTask);
+                    }
+                }
+            }
+            Action::RetryTask => self.status = "请在任务/审核界面选中失败任务再重试".into(),
             Action::MergeTask if matches!(self.view, View::Tasks | View::Review) => {
                 if let Some(task) = self.selected_task() {
                     match task.merge_ready() {
@@ -1185,6 +1200,7 @@ impl App {
             "start-task" => self.act(Action::StartTask),
             "delete-selected" => self.act(Action::DeleteSelected),
             "merge-task" => self.act(Action::MergeTask),
+            "retry-task" => self.act(Action::RetryTask),
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,
@@ -1222,6 +1238,18 @@ impl App {
 
     /// Semantic role tags, not guesses based on message text.
     pub fn task_lines(&self) -> Vec<(String, i8)> {
+        let mut lines = Vec::new();
+        if let Some(f) = self.selected_task().and_then(|t| t.failure.as_ref()) {
+            lines.push((format!("失败原因：{}", f.reason), -1));
+            lines.push((
+                "r 重试原任务（需确认） · i 调整讨论；不会自动重试".into(),
+                2,
+            ));
+        }
+        lines.extend(self.task_lines_inner());
+        lines
+    }
+    fn task_lines_inner(&self) -> Vec<(String, i8)> {
         if let Some(description) = self.node_description() {
             return description.lines().map(|l| (l.to_owned(), 2)).collect();
         }

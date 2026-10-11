@@ -216,11 +216,12 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                         )
                     } else if app.view == View::Tasks {
                         format!(
-                            "{} 讨论 · {} 启动 · {} 删除 · {} 合并 · ",
+                            "{} 讨论 · {} 启动 · {} 删除 · {} 合并 · {} 重试 · ",
                             app.keymap.hint(Action::Reply),
                             app.keymap.hint(Action::StartTask),
                             app.keymap.hint(Action::DeleteSelected),
-                            app.keymap.hint(Action::MergeTask)
+                            app.keymap.hint(Action::MergeTask),
+                            app.keymap.hint(Action::RetryTask)
                         )
                     } else {
                         String::new()
@@ -402,6 +403,19 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             ],
             90,
             9,
+        ),
+        Mode::ConfirmRetry { task_id, .. } => popup(
+            frame,
+            theme,
+            " 重试失败讨论 ",
+            vec![
+                Line::from(format!("原任务：{task_id}")),
+                Line::from("重新调用模型重试只读讨论，可能消耗额度；不新建任务/不写代码。"),
+                Line::from("保留需求、讨论与候选；不会自动切换模型或循环重试。"),
+                Line::from("Enter 明确重试 · Esc 取消"),
+            ],
+            100,
+            8,
         ),
         Mode::ConfirmRead => popup(
             frame,

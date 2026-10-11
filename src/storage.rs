@@ -285,6 +285,61 @@ impl WorkspaceStore {
                     [&task.id],
                 )?;
             }
+            let run: Option<(String, String)> = store
+                .connection
+                .query_row(
+                    "SELECT status,session FROM runs WHERE id=?1",
+                    [&task.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if let Some((status, session)) = run
+                && status == "Failed"
+                && task.merged.is_none()
+            {
+                task.state = TaskState::Failed;
+                if task.failure.is_none() {
+                    let mut reason = None;
+                    let folder = store.directory.join("sessions");
+                    if !fs::symlink_metadata(&folder).is_ok_and(|m| m.file_type().is_symlink())
+                        && let Ok(entries) = fs::read_dir(folder)
+                    {
+                        for entry in entries.flatten() {
+                            if !entry.file_type()?.is_file()
+                                || entry.metadata()?.len() > 10 * 1024 * 1024
+                                || !entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .ends_with(&format!("_{session}.jsonl"))
+                            {
+                                continue;
+                            }
+                            use std::io::BufRead;
+                            for line in std::io::BufReader::new(fs::File::open(entry.path())?)
+                                .lines()
+                                .map_while(Result::ok)
+                            {
+                                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line)
+                                    && let Some(error) = record["message"]["errorMessage"].as_str()
+                                {
+                                    reason = Some(error.chars().take(2000).collect());
+                                }
+                            }
+                        }
+                    }
+                    task.failure = Some(crate::nodes::TaskFailure {
+                        stage: if task.discussion_pending || task.plan.is_none() {
+                            crate::nodes::FailureStage::Discussion
+                        } else {
+                            crate::nodes::FailureStage::Implementation
+                        },
+                        reason: reason.unwrap_or_else(|| {
+                            "历史执行失败；原始错误未记录，请查看本地会话日志".into()
+                        }),
+                        node_id: task.active_node_id.clone(),
+                    });
+                }
+            }
             task.interrupt();
             store.save_task(&task)?;
         }

@@ -825,13 +825,45 @@ impl CodingRun {
             let mut dirty = task.checkpoint != self.checkpoint;
             task.state = if self.hold_plan && matches!(self.phase, Phase::Planning) && self.finished
             {
-                TaskState::Ready
+                if app.run.status == RunStatus::Idle {
+                    TaskState::Ready
+                } else {
+                    TaskState::from_run(&format!("{:?}", app.run.status))
+                }
             } else if matches!(self.phase, Phase::Planning) && app.run.status == RunStatus::Running
             {
                 TaskState::Planning
             } else {
                 TaskState::from_run(&format!("{:?}", app.run.status))
             };
+            let failure = if app.run.status == RunStatus::Failed {
+                Some(crate::nodes::TaskFailure {
+                    stage: if matches!(self.phase, Phase::Planning) {
+                        crate::nodes::FailureStage::Discussion
+                    } else {
+                        crate::nodes::FailureStage::Implementation
+                    },
+                    reason: app
+                        .run
+                        .error
+                        .as_deref()
+                        .unwrap_or("Pi 执行失败，未返回详细原因")
+                        .chars()
+                        .take(2000)
+                        .collect(),
+                    node_id: if matches!(self.phase, Phase::Planning) {
+                        self.discussion_node.clone()
+                    } else {
+                        task.active_node_id.clone()
+                    },
+                })
+            } else if app.run.status == RunStatus::Running {
+                None
+            } else {
+                task.failure.clone()
+            };
+            dirty |= task.failure != failure;
+            task.failure = failure;
             dirty |= previous_state != task.state;
             task.checkpoint = self.checkpoint.clone();
             if let Phase::Node(index) = self.phase {
@@ -879,7 +911,11 @@ impl CodingRun {
             self.closed = true;
             self.finished = true;
             app.agent_connected = false;
-            app.status = "拆分已停止 · 未进入节点实现".into();
+            app.status = format!(
+                "讨论/规划失败：{} · r 重试原任务（需确认）",
+                app.run.error.as_deref().unwrap_or("执行已停止")
+            );
+            self.sync_state(app, store)?;
             store.finish_run(&self.id, &format!("{:?}", app.run.status), None)?;
             return Ok(());
         }
@@ -898,6 +934,7 @@ impl CodingRun {
             self.closed = true;
             app.agent_connected = false;
             let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+            task.failure = None;
             task.discussion_pending = plan.is_none();
             if let Some(plan) = plan {
                 if task.plan.is_some() {
@@ -1063,6 +1100,7 @@ impl CodingRun {
         self.send_prompt(&prompt, app)?;
         app.status = "只读讨论规划中 · 未授予编码写入".into();
         store.finish_run(&self.id, "Running", self.checkpoint.as_deref())?;
+        self.sync_state(app, store)?;
         Ok(())
     }
     fn publish_preview(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {

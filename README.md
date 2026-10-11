@@ -66,6 +66,13 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
 单个任务有两个未批准节点时，在节点边界停止继续执行。审核界面按 `a` 打开确认框，再按 Enter 批准（Esc 取消；`:approve-node` 仍兼容），再按 p 明确继续；批准不会自行恢复或合并代码。
 非交互执行可加 `--headless`，仍需明确写入授权；超过待审积压阈值会停止，不能替代人类审阅。退出/重启不恢复 Pi 执行；已有任务可用 s 明确启动/从候选状态继续（新 Pi 会话，不复活旧会话，不恢复未发送纠正）；任意历史节点返工仍未接入。默认没有虚构教学内容。
 
+## 失败与重试
+模型限额、网络/会话或规划校验失败会明确显示“失败”，保留需求/讨论/候选，并持久化错误原因与失败阶段。不会自动重连、循环重试或切换模型。
+在 1 选中失败任务，按 **r**（命令 :retry-task，配置 retry_task）：
+- 讨论/规划失败：Enter 确认重新调用模型，使用原任务/候选与最近讨论输入只读重试；Esc 取消，不新建重复任务、不写代码。额度需先自行恢复。
+- 编码失败：进入已有计划的 s 写入授权确认流程，保留已产生改动；不自动复活原 Pi 队列或把失败当完成。
+失败原因在重启后仍可见；旧记录 runs=Failed 而任务误显示“准备好”时，打开后纠正为 Failed，只从匹配本地会话中提取原错误；无法找到时明确标注原因未记录。加载不调用模型。
+
 ## 纠正与追问
 
 按 `1` 进入任务视图：
@@ -132,6 +139,7 @@ python3 scripts/conversation-smoke.py target/release/duet-workbench
 python3 scripts/node-smoke.py target/release/duet-workbench
 python3 scripts/task-controls-smoke.py target/release/duet-workbench
 python3 scripts/merge-smoke.py target/release/duet-workbench
+python3 scripts/retry-smoke.py target/release/duet-workbench
 ```
 
 Unix 假 RPC 和 PTY 测试需要 Python 3。自动测试不调用真实模型。
@@ -154,7 +162,7 @@ python3 scripts/performance-probe.py target/debug/duet-workbench target/release/
 ## 当前边界
 
 已具备受控手动任务的第一条编码链路，不是完整自主多 Agent 平台。
-节点契约、只读拆分、顺序执行、节点审核与任务历史导航已实现；83 项自动测试、严格 clippy 与 release PTY 验证通过。新节点流水线以假 RPC 验证，尚未完成新的真实模型端到端验证。
+节点契约、只读拆分、顺序执行、节点审核与任务历史导航已实现；89 项自动测试、严格 clippy 与 release PTY 验证通过。新节点流水线以假 RPC 验证，尚未完成新的真实模型端到端验证。
 待实现：验证 Runner、独立审查、固定版本验证证据、原 Pi 会话/队列恢复、任意历史节点返工、后台启动与按需 AI 教学。
 浏览暂载入前 80 个文件，每文件 1 MiB；没有完整 IDE 编辑、语法高亮或系统级沙箱。
 详见 `docs/phase-1.md`。
