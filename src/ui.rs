@@ -324,17 +324,15 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache, evidence_c
             } else {
                 " 发给 AI · 仍有编码权限 "
             };
-            popup(
-                frame,
-                theme,
-                title,
-                vec![
-                    Line::from(safe_text(text)),
-                    Line::from("Enter 提交 · Esc 返回 · 运行中消息在工具边界接收"),
-                ],
-                76,
-                6,
-            );
+            let notice = if app.planning_only {
+                "只读讨论 · 代码可能外发"
+            } else if matches!(app.run.status, crate::rpc::RunStatus::Paused | crate::rpc::RunStatus::Pausing) {
+                "已暂停 · 继续后才发送"
+            } else {
+                "仍有编码权限"
+            };
+            input_popup(frame, theme, title, text, "", 76,
+                &[notice, "Enter 提交 · Esc 返回", "运行中消息在工具边界接收"]);
         }
         Mode::Input { search, text } => {
             let title = if *search {
@@ -342,16 +340,8 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache, evidence_c
             } else {
                 " 命令 · Enter 执行 / Esc 返回 "
             };
-            let area = centered(area, 72, 5);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(format!("> {}", safe_text(text)))
-                    .block(theme.block(title, true))
-                    .style(Style::default().bg(theme.bg).fg(theme.text)),
-                area,
-            );
-            let cursor = (2 + text.width()).min(area.width.saturating_sub(2) as usize) as u16;
-            frame.set_cursor_position((area.x + cursor, area.y + 1));
+            let hint = if *search { "Enter 应用 · Esc 返回" } else { "Enter 执行 · Esc 返回" };
+            input_popup(frame, theme, title, text, "> ", 72, &[hint]);
         }
         Mode::ConfirmCode { prompt } => {
             let mut lines = vec![
@@ -1162,6 +1152,102 @@ pub fn safe_text(text: &str) -> String {
     output
 }
 
+/// Literal input display only: the source in Mode is never changed. Cursor
+/// coordinates describe the sanitized, cell-wrapped display, not byte offsets.
+#[derive(Debug)]
+struct InputLayout {
+    lines: Vec<String>,
+    cursor_column: usize,
+}
+
+impl InputLayout {
+    fn new(text: &str, prefix: &str, width: usize) -> Self {
+        if width == 0 {
+            return Self { lines: Vec::new(), cursor_column: 0 };
+        }
+        let display = safe_text(&format!("{prefix}{text}"));
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        let mut column = 0;
+        for glyph in display.graphemes(true) {
+            if glyph == "\n" {
+                lines.push(std::mem::take(&mut line));
+                column = 0;
+                continue;
+            }
+            let cells = glyph.width();
+            if column + cells > width && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                column = 0;
+            }
+            // Same narrow-cell fallback as literal readers. Actual input
+            // popups have at least 22 cells under the existing terminal guard.
+            if cells > width {
+                line.push('�');
+                column += 1;
+            } else {
+                line.push_str(glyph);
+                column += cells;
+            }
+        }
+        lines.push(line);
+        // A full last row needs a real next row for the insertion cursor.
+        if column == width {
+            lines.push(String::new());
+            column = 0;
+        }
+        Self { lines, cursor_column: column }
+    }
+
+    fn window_start(&self, height: usize) -> usize {
+        self.lines.len().saturating_sub(height)
+    }
+}
+
+fn input_popup(
+    frame: &mut Frame, theme: Theme, title: &str, text: &str,
+    prefix: &str, preferred_width: u16, hints: &[&str],
+) {
+    let terminal = frame.area();
+    let width = preferred_width.min(terminal.width);
+    let inner_width = width.saturating_sub(2) as usize;
+    let layout = InputLayout::new(text, prefix, inner_width);
+    // Hints have their own literal region: only the input scrolls. Essential
+    // mode/Enter/Esc hints precede the optional runtime explanation.
+    let mut footer = Vec::new();
+    let footer_capacity = terminal.height.saturating_sub(3) as usize;
+    for hint in hints {
+        let rows = wrap_cells(&safe_text(hint), inner_width);
+        if footer.len() + rows.len() > footer_capacity { break; }
+        footer.extend(rows);
+    }
+    let height = (layout.lines.len().saturating_add(footer.len()).saturating_add(2))
+        .max(5).min(terminal.height as usize) as u16;
+    let area = centered(terminal, width, height);
+    let block = theme.block(title, true);
+    let inner = block.inner(area);
+    let input_height = inner.height.saturating_sub(footer.len() as u16);
+    let start = layout.window_start(input_height as usize);
+    let input_area = Rect::new(inner.x, inner.y, inner.width, input_height);
+    let footer_area = Rect::new(inner.x, inner.y + input_height, inner.width, footer.len() as u16);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block.style(Style::default().bg(theme.bg).fg(theme.text)), area);
+    frame.render_widget(
+        Paragraph::new(layout.lines.iter().skip(start).take(input_height as usize)
+            .map(|line| Line::from(line.as_str())).collect::<Vec<_>>()),
+        input_area,
+    );
+    frame.render_widget(
+        Paragraph::new(footer.into_iter().map(Line::from).collect::<Vec<_>>())
+            .style(Style::default().fg(theme.warning)),
+        footer_area,
+    );
+    if input_height > 0 && inner.width > 0 {
+        let row = layout.lines.len().saturating_sub(1).saturating_sub(start) as u16;
+        frame.set_cursor_position((inner.x + layout.cursor_column as u16, inner.y + row));
+    }
+}
+
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -1603,6 +1689,90 @@ mod text_surface_tests {
         for path in ["README.md", "notes.MARKDOWN", "a.mdown", "a.mkd"] { assert!(is_markdown_path(path)); }
         for path in ["src/a.rs", "a.md.rs", "Makefile", "a.txt", "a.mdx"] { assert!(!is_markdown_path(path)); }
         assert!(block_matches(&natural_block("some **visible** phrase", 4, Role::Body), "some visible phrase"));
+    }
+}
+
+/// Human-started regression only (not executed by this node):
+/// `cargo test --lib ui::input_viewport_tests`
+/// Manual: open command, search, read-only discussion, coding discussion and
+/// paused correction inputs in both themes. Type past one row, exactly fill a
+/// row, then backspace across its boundary. Paste CJK, emoji, combining marks,
+/// Markdown source and enough text to exceed terminal height. Resize down to
+/// 24x8 and back up; confirm the tail/cursor stay inside the input, mode warnings
+/// and Enter/Esc hints remain visible. Submit a harmless search/AI message and
+/// verify its original source; cancel commands with Esc without executing them.
+#[cfg(test)]
+mod input_viewport_tests {
+    use super::*;
+    use ratatui::{backend::{Backend, TestBackend}, Terminal};
+
+    #[test]
+    fn exact_fill_wrap_and_delete_follow_the_insertion_point() {
+        let empty = InputLayout::new("", "> ", 6);
+        assert_eq!(empty.lines, vec!["> "]);
+        assert_eq!(empty.cursor_column, 2);
+        let exact = InputLayout::new("abcd", "> ", 6);
+        assert_eq!(exact.lines, vec!["> abcd", ""]);
+        assert_eq!(exact.cursor_column, 0);
+        let continued = InputLayout::new("abcde", "> ", 6);
+        assert_eq!(continued.lines, vec!["> abcd", "e"]);
+        assert_eq!(continued.cursor_column, 1);
+        let deleted = InputLayout::new("abc", "> ", 6);
+        assert_eq!(deleted.lines, vec!["> abc"]);
+        assert_eq!(deleted.cursor_column, 5);
+    }
+
+    #[test]
+    fn literal_graphemes_sanitization_and_resize_share_one_layout() {
+        let source = "中英👩‍💻e\u{301}**_#`[link](url)";
+        for width in [4, 7, 22, 74] {
+            let layout = InputLayout::new(source, "> ", width);
+            assert_eq!(layout.lines.concat(), format!("> {source}"));
+            assert!(layout.lines.iter().all(|line| line.width() <= width));
+            assert!(layout.cursor_column < width);
+            assert!(layout.lines.iter().any(|line| line.contains("👩‍💻")));
+            assert!(layout.lines.iter().any(|line| line.contains("e\u{301}")));
+        }
+        let layout = InputLayout::new("a\t中\u{1b}\nend", "", 22);
+        assert_eq!(layout.lines, vec!["a    中�", "end"]);
+        assert_eq!(layout.cursor_column, 3);
+        let layout = InputLayout::new("abcdef\n", "", 6);
+        assert_eq!(layout.lines, vec!["abcdef", ""]);
+        assert_eq!(layout.cursor_column, 0);
+    }
+
+    #[test]
+    fn long_input_window_always_contains_the_cursor_row() {
+        let layout = InputLayout::new(&"中文👩‍💻abc".repeat(100), "> ", 22);
+        for height in [1, 2, 6, 1000] {
+            let start = layout.window_start(height);
+            let cursor_row = layout.lines.len() - 1 - start;
+            assert!(cursor_row < height);
+            assert_eq!(layout.lines[start..].last(), layout.lines.last());
+        }
+    }
+
+    #[test]
+    fn popups_keep_tail_cursor_hints_and_mode_notices_inside_terminal() {
+        let source = format!("{}尾部XYZ", "中👩‍💻**source**".repeat(100));
+        for (width, height) in [(24, 8), (36, 12), (100, 30)] {
+            for notice in ["只读讨论 · 代码可能外发", "已暂停 · 继续后才发送", "仍有编码权限"] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| input_popup(frame, Theme::new(false), " 消息 ",
+                    &source, "", 76, &[notice, "Enter 提交 · Esc 返回"])).unwrap();
+                let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                assert!(cursor.x > 0 && cursor.x < width - 1);
+                assert!(cursor.y > 0 && cursor.y < height - 1);
+                let buffer = terminal.backend().buffer();
+                let output: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+                // The marker itself may wrap; inspect the cell immediately
+                // before the insertion cursor rather than flattening borders.
+                assert_eq!(buffer[(cursor.x - 1, cursor.y)].symbol(), "Z");
+                assert!(output.contains("Enter"));
+                assert!(output.contains("Esc"));
+                assert!(output.contains("只读讨论") || output.contains("已暂停") || output.contains("仍有编码权限"));
+            }
+        }
     }
 }
 
