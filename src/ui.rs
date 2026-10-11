@@ -57,8 +57,8 @@ impl Theme {
         // markers deliberately do not affect the status palette.
         let role_color = match context.role {
             Role::Body => self.text,
-            Role::User | Role::Acceptance => self.good,
-            Role::Assistant | Role::Field => self.accent,
+            Role::Assistant | Role::Acceptance => self.good,
+            Role::User | Role::Field => self.accent,
             Role::System => self.muted,
             Role::Constraint => self.warning,
         };
@@ -96,6 +96,9 @@ impl Theme {
             style = style.fg(color);
         } else if context.role == Role::Constraint {
             style = style.fg(self.warning);
+        } else if matches!(context.role, Role::User | Role::Assistant | Role::System) {
+            // Chat Markdown must not erase the message's role color baseline.
+            style = style.fg(role_color);
         }
         style
     }
@@ -126,13 +129,14 @@ pub fn style_markdown(lines: &[SemanticLine], light: bool) -> Vec<Line<'static>>
 #[derive(Default)]
 pub struct Renderer {
     reader: ReaderCache,
+    evidence: EvidenceCache,
 }
 impl Renderer {
     pub fn layout_builds(&self) -> usize {
         self.reader.builds
     }
     pub fn draw(&mut self, frame: &mut Frame, app: &App) {
-        draw_cached(frame, app, &mut self.reader);
+        draw_cached(frame, app, &mut self.reader, &mut self.evidence);
     }
 }
 
@@ -140,7 +144,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     Renderer::default().draw(frame, app);
 }
 
-fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
+fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache, evidence_cache: &mut EvidenceCache) {
     let theme = Theme::new(app.light);
     let area = frame.area();
     frame.render_widget(
@@ -226,12 +230,12 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         .split(body);
         queue(frame, app, cols[0], theme);
         reader(frame, app, cols[1], theme, cache);
-        evidence(frame, app, cols[2], theme);
+        evidence(frame, app, cols[2], theme, evidence_cache);
     } else if body.width >= 78 {
         let cols = Layout::horizontal([Constraint::Length(25), Constraint::Min(30)]).split(body);
         queue(frame, app, cols[0], theme);
         if app.panel == Panel::Evidence {
-            evidence(frame, app, cols[1], theme);
+            evidence(frame, app, cols[1], theme, evidence_cache);
         } else {
             reader(frame, app, cols[1], theme, cache);
         }
@@ -239,7 +243,7 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         match app.panel {
             Panel::Queue => queue(frame, app, body, theme),
             Panel::Reader => reader(frame, app, body, theme, cache),
-            Panel::Evidence => evidence(frame, app, body, theme),
+            Panel::Evidence => evidence(frame, app, body, theme, evidence_cache),
         }
     }
     // Keep the existing status entry, including failure details even when the
@@ -254,21 +258,17 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
     } else {
         app.status.clone()
     };
+    let focus = format!(" 焦点：{} · ", match app.panel {
+        Panel::Queue if app.view == View::Tasks => "任务 / 节点",
+        Panel::Queue => "文件列表",
+        Panel::Reader => "内容",
+        Panel::Evidence => "说明 / 验证",
+    });
+    let mut status_spans = vec![Span::styled(focus.clone(), Style::default().fg(theme.warning))];
+    status_spans.extend(compact(&status, (area.width as usize).saturating_sub(focus.width()), theme, Role::Constraint).spans);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(
-                    " 焦点：{} · {}",
-                    match app.panel {
-                        Panel::Queue if app.view == View::Tasks => "任务 / 节点",
-                        Panel::Queue => "文件列表",
-                        Panel::Reader => "内容",
-                        Panel::Evidence => "说明 / 验证",
-                    },
-                    safe_text(&status)
-                ),
-                Style::default().fg(theme.warning),
-            )),
+            Line::from(status_spans),
             Line::from(Span::styled(
                 format!(
                     " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
@@ -353,18 +353,15 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             let cursor = (2 + text.width()).min(area.width.saturating_sub(2) as usize) as u16;
             frame.set_cursor_position((area.x + cursor, area.y + 1));
         }
-        Mode::ConfirmCode { prompt } => popup(
-            frame,
-            theme,
-            " 开始只读讨论与规划 ",
-            vec![
-                Line::from(safe_text(prompt)),
+        Mode::ConfirmCode { prompt } => {
+            let mut lines = vec![
                 Line::from("代码可能外发 · 文件工具非安全沙箱"),
                 Line::from("Enter 只读讨论 · 编码需另按 s 确认 · Esc 取消"),
-            ],
-            72,
-            7,
-        ),
+            ];
+            lines.extend(style_markdown(&markdown::render(prompt, frame.area().width.min(72).saturating_sub(2) as usize, MarkdownContext::default()), app.light));
+            let height = (lines.len() + 2).min(u16::MAX as usize) as u16;
+            popup(frame, theme, " 开始只读讨论与规划 ", lines, 72, height);
+        },
         Mode::MergePreview { preview, scroll } => {
             let height = frame.area().height.saturating_sub(4);
             let mut lines = vec![
@@ -436,12 +433,12 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             ];
             if let Some(t) = task {
                 for n in &t.nodes {
-                    lines.push(Line::from(format!(
-                        "{} · {} · {}",
-                        n.contract.id,
-                        n.contract.title,
-                        n.contract.scope.join("、")
-                    )));
+                    let prefix = format!("{} · ", safe_text(&n.contract.id));
+                    let mut spans = vec![Span::raw(prefix.clone())];
+                    spans.extend(compact(&n.contract.title, (frame.area().width.min(90).saturating_sub(2) as usize).saturating_sub(prefix.width()), theme, Role::Body).spans);
+                    lines.push(Line::from(spans));
+                    // Scope paths are literal and must not compete with a long title.
+                    lines.push(Line::from(format!("范围：{}", safe_text(&n.contract.scope.join("、")))));
                 }
             }
             lines.push(Line::from("Enter 启动实施 · Esc 返回讨论"));
@@ -585,22 +582,8 @@ fn task_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
             } else {
                 theme.text
             };
-            ListItem::new(Line::from(Span::styled(
-                format!(
-                    "{} {}",
-                    if Some(s) == app.task_selection.as_ref() {
-                        "›"
-                    } else {
-                        " "
-                    },
-                    safe_text(label)
-                ),
-                if i == selected {
-                    Style::default().fg(color).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(color)
-                },
-            )))
+            ListItem::new(queue_label(label, Some(s) == app.task_selection.as_ref(), area.width.saturating_sub(2) as usize, theme))
+                .style(if i == selected { Style::default().fg(color).add_modifier(Modifier::BOLD) } else { Style::default().fg(color) })
         })
         .collect();
     frame.render_widget(
@@ -619,10 +602,7 @@ fn review_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         if chosen {
             selected = items.len();
         }
-        items.push(ListItem::new(Line::from(Span::styled(
-            format!("{} {}", if chosen { "›" } else { " " }, safe_text(&label)),
-            Style::default().fg(if chosen { theme.accent } else { theme.muted }),
-        ))));
+        items.push(ListItem::new(queue_label(&label, chosen, area.width.saturating_sub(2) as usize, theme)));
         if chosen {
             for &index in &indices {
                 let item = &app.items[index];
@@ -785,16 +765,108 @@ fn contract_layout(content: &NodeContractContent, width: usize, filter: &str) ->
         // Filter whole already-parsed blocks, retaining labels and cross-line
         // Markdown structure. Match raw and rendered content before cell wrapping
         // can split a phrase. Concatenation also permits long literal metadata.
-        let rendered: String = block.lines.iter().map(SemanticLine::text).collect();
-        if !filter.is_empty() && !block.source.contains(filter) && !rendered.contains(filter) {
-            continue;
-        }
+        if !block_matches(&block, filter) { continue; }
         if !lines.is_empty() {
             lines.extend(markdown::wrap(&[], width, MarkdownContext::default()));
         }
         lines.extend(block.lines);
     }
     lines
+}
+
+/// Markdown selection is explicit; source and fixed review diffs stay literal.
+fn is_markdown_path(path: &str) -> bool {
+    std::path::Path::new(path).extension().and_then(|s| s.to_str())
+        .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"))
+}
+
+fn natural_block(source: &str, width: usize, role: Role) -> ContractBlock {
+    ContractBlock { source: source.to_owned(), lines: markdown::render(source, width, MarkdownContext { role, status: Status::None }) }
+}
+
+// Bound the unwrapped layout by source size: rules allocate `width` cells.
+// Never request usize::MAX merely to search or flatten a short document.
+fn unwrapped_width(source: &str) -> usize {
+    source.len().saturating_mul(4).saturating_add(32)
+}
+
+fn block_matches(block: &ContractBlock, filter: &str) -> bool {
+    if filter.is_empty() || block.source.contains(filter) { return true; }
+    let context = block.lines.first().map_or(MarkdownContext::default(), |l| l.context);
+    // Match before wrapping, including visible phrases spanning inline markers.
+    markdown::render(&block.source, unwrapped_width(&block.source), context).iter()
+        .any(|line| line.text().contains(filter))
+        || block.lines.iter().map(SemanticLine::text).collect::<String>().contains(filter)
+}
+
+fn record_layout(records: &[(String, i8)], width: usize, filter: &str) -> Vec<SemanticLine> {
+    let mut lines = Vec::new();
+    for (index, (source, kind)) in records.iter().enumerate() {
+        let role = match kind {
+            3 | 7 => Role::User,
+            4 | 8 => Role::Assistant,
+            2 | 5 => Role::System,
+            6 => Role::Constraint,
+            _ => Role::Body,
+        };
+        let chat_body = matches!(kind, 3 | 4 | 5);
+        let block_width = if chat_body { width.saturating_sub(2) } else { width };
+        let mut block = if matches!(kind, 2 | 6 | 7 | 8) {
+            ContractBlock { source: source.clone(), lines: contract_literal(source, block_width, role, Status::None, matches!(kind, 6 | 7 | 8)) }
+        } else { natural_block(source, block_width, role) };
+        let is_header = matches!(kind, 2 | 7 | 8) && source.starts_with("┌─ ")
+            && records.get(index + 1).is_some_and(|(_, body_kind)| matches!(body_kind, 3 | 4 | 5));
+        let header_match = is_header && records.get(index + 1)
+            .is_some_and(|(body, _)| block_matches(&natural_block(body, width.saturating_sub(2), role), filter));
+        // Keep real workflow status/shortcuts and evidence risks under search.
+        // Only trusted headers participate in message grouping, never authored prose.
+        let trusted_metadata = *kind == 6 || (*kind == 2 && !is_header);
+        if !trusted_metadata && !header_match && !block_matches(&block, filter) { continue; }
+        if chat_body && width >= 2 {
+            for line in &mut block.lines {
+                line.fragments.insert(0, Fragment { text: "│ ".into(), style: InlineStyle::default() });
+            }
+        }
+        lines.extend(block.lines);
+    }
+    lines
+}
+
+fn queue_label(label: &str, selected: bool, width: usize, theme: Theme) -> Line<'static> {
+    let (title, status) = label.rsplit_once(" · ").unwrap_or((label, ""));
+    let suffix = if status.is_empty() { String::new() } else { format!(" · {}", safe_text(status)) };
+    let mut spans = vec![Span::raw(if selected { "› " } else { "  " })];
+    spans.extend(compact(title, width.saturating_sub(2 + suffix.width()), theme, Role::Body).spans);
+    spans.push(Span::styled(suffix, Style::default().fg(theme.warning)));
+    Line::from(spans)
+}
+
+/// One-row natural language uses inline fragments only, with explicit ellipsis.
+fn compact(text: &str, width: usize, theme: Theme, role: Role) -> Line<'static> {
+    // A literal prefix keeps headings, list markers, rules and fences from
+    // becoming block syntax in a one-row label. Inline markup and link targets
+    // still use the shared renderer. Remove only our own prefix afterwards.
+    let source = format!("x {}", safe_text(text).replace(['\n', '\r'], " "));
+    let mut fragments = Vec::new();
+    for line in markdown::render(&source, unwrapped_width(&source), MarkdownContext::default()) {
+        if !fragments.is_empty() { fragments.push(Fragment { text: " ".into(), style: InlineStyle::default() }); }
+        fragments.extend(line.fragments);
+    }
+    let mut prefix_remaining = 2;
+    for fragment in &mut fragments {
+        let remove = prefix_remaining.min(fragment.text.len());
+        fragment.text.drain(..remove);
+        prefix_remaining -= remove;
+        if prefix_remaining == 0 { break; }
+    }
+    let total: usize = fragments.iter().map(|f| f.text.width()).sum();
+    let clipped = total > width;
+    let context = MarkdownContext { role, status: Status::None };
+    let lines = markdown::wrap(&fragments, width.saturating_sub(usize::from(clipped)), context);
+    let mut spans: Vec<_> = lines.first().into_iter().flat_map(|line| &line.fragments)
+        .map(|f| Span::styled(f.text.clone(), theme.markdown_style(context, f.style))).collect();
+    if clipped && width > 0 { spans.push(Span::raw("…")); }
+    Line::from(spans)
 }
 
 #[derive(PartialEq, Eq)]
@@ -807,9 +879,12 @@ struct ReaderKey {
     view: View,
     page: Page,
     version: String,
+    title: String,
     filter: String,
     revision: u64,
     is_diff: bool,
+    records: Vec<(String, i8)>,
+    selection: Option<String>,
 }
 #[derive(Default)]
 struct ReaderCache {
@@ -828,6 +903,18 @@ impl ReaderCache {
         } else {
             0
         };
+        let natural = app.view == View::Tasks || app.view == View::Knowledge
+            || (app.view == View::Review && app.page != Page::Code)
+            || (app.view == View::Project && app.current().is_some_and(|item| is_markdown_path(&item.title)));
+        let records = if contract.is_some() { Vec::new() }
+            else if app.view == View::Tasks { app.task_text_blocks() }
+            else if app.view == View::Review && app.page == Page::Evidence && app.selected_node().is_some() {
+                app.node_evidence_blocks().unwrap_or_default().into_iter()
+                    .map(|(text, literal)| (text, if literal { 6 } else { 0 })).collect()
+            }
+            else if app.view == View::Knowledge && !app.notes.is_empty() {
+                app.notes.iter().cloned().map(|note| (note, 0)).collect()
+            } else { vec![(app.body(), 0)] };
         let key = ReaderKey {
             contract,
             node_evidence: if app.view == View::Review && app.page == Page::Evidence {
@@ -849,8 +936,11 @@ impl ReaderCache {
             version: app
                 .current()
                 .map_or_else(String::new, |item| item.version.clone()),
+            title: app.current().map_or_else(String::new, |item| item.title.clone()),
             filter: app.filter.clone(),
             revision,
+            records,
+            selection: app.task_selection.as_ref().map(|s| format!("{}:{}", s.task_id, s.node_id.as_deref().unwrap_or(""))),
         };
         if self.key.as_ref() == Some(&key) {
             return;
@@ -860,6 +950,18 @@ impl ReaderCache {
         self.builds += 1;
         if let Some(contract) = &key.contract {
             self.contract_lines = Some(contract_layout(contract, width as usize, &app.filter));
+            self.key = Some(key);
+            return;
+        }
+        if natural {
+            let mut lines = Vec::new();
+            if matches!(app.view, View::Review | View::Project) && let Some(item) = app.current() {
+                let label = match app.page { Page::Intent => "意图", Page::Evidence => "证据", Page::Code => "文档" };
+                lines.extend(contract_literal(&format!("{label} · {}", item.version), width as usize, Role::System, Status::None, false));
+                lines.extend(markdown::wrap(&[], width as usize, MarkdownContext::default()));
+            }
+            lines.extend(record_layout(&key.records, width as usize, &app.filter));
+            self.contract_lines = Some(lines);
             self.key = Some(key);
             return;
         }
@@ -874,19 +976,6 @@ impl ReaderCache {
             Page::Code => "代码",
             Page::Evidence => "证据",
         };
-        if app.view == View::Tasks {
-            for (line, role) in app
-                .task_lines()
-                .into_iter()
-                .filter(|(line, _)| app.filter.is_empty() || line.contains(&app.filter))
-            {
-                for wrapped in wrap_cells(&safe_text(&line), width as usize) {
-                    self.lines.push((wrapped, role));
-                }
-            }
-            self.key = Some(key);
-            return;
-        }
         if let Some(item) = app.current() {
             for line in wrap_cells(
                 &format!("{page} · {}", safe_text(&item.version)),
@@ -901,9 +990,9 @@ impl ReaderCache {
             .split('\n')
             .filter(|line| app.filter.is_empty() || line.contains(&app.filter))
         {
-            let role = if line.starts_with('+') {
+            let role = if key.is_diff && line.starts_with('+') {
                 1
-            } else if line.starts_with('-') {
+            } else if key.is_diff && line.starts_with('-') {
                 -1
             } else {
                 0
@@ -945,7 +1034,7 @@ pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
 
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
     cache.prepare(app, area.width.saturating_sub(2));
-    let scroll = if app.view == View::Tasks || cache.contract_lines.is_some() {
+    let scroll = if app.view == View::Tasks || app.showing_node_contract() {
         app.task_scroll
     } else {
         app.current().map_or(0, |item| item.scroll)
@@ -1004,51 +1093,48 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
     );
 }
 
-fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
-    let text = app
-        .node_evidence()
-        .or_else(|| {
-            if app.view == View::Tasks {
-                return Some(
-                    app.selected_task()
-                        .and_then(|t| t.plan.as_ref())
-                        .map(|p| {
-                            format!(
-                                "总体目标：{}\n约束：{}\n验收（未验证）：\n{}",
-                                p.objective,
-                                p.constraints.join("；"),
-                                p.acceptance.join("\n")
-                            )
-                        })
-                        .unwrap_or_else(|| "暂无节点契约".into()),
-                );
+#[derive(Default)]
+struct EvidenceCache {
+    key: Option<(Vec<(String, bool)>, u16, View, usize, Option<String>)>,
+    lines: Vec<SemanticLine>,
+}
+
+fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut EvidenceCache) {
+    let mut blocks = app.node_evidence_blocks().unwrap_or_else(|| {
+        let mut blocks = Vec::new();
+        if app.view == View::Tasks {
+            if let Some(plan) = app.selected_task().and_then(|t| t.plan.as_ref()) {
+                blocks.push(("总体目标".into(), true));
+                blocks.push((plan.objective.clone(), false));
+                blocks.push(("任务约束".into(), true));
+                blocks.extend(plan.constraints.iter().cloned().map(|s| (s, false)));
+                for (index, acceptance) in plan.acceptance.iter().enumerate() {
+                    blocks.push((format!("□ 未验证 · 验收条件 {}", index + 1), true));
+                    blocks.push((acceptance.clone(), false));
+                }
             }
-            None
-        })
-        .unwrap_or_else(|| {
-            app.current()
-                .map(|item| {
-                    let mut parts = Vec::new();
-                    if app.explain && !item.explanation.is_empty() {
-                        parts.push(item.explanation.as_str());
-                    }
-                    if !item.evidence.is_empty() {
-                        parts.push(item.evidence.as_str());
-                    }
-                    parts.join("\n\n")
-                })
-                .unwrap_or_default()
-        });
-    let text = if text.is_empty() {
-        "暂无记录".to_owned()
-    } else {
-        text
-    };
+        } else if let Some(item) = app.current() {
+            blocks.push(("说明 / 验证记录；文档复选框不代表真实验证或人工批准。".into(), true));
+            if app.explain && !item.explanation.is_empty() { blocks.push((item.explanation.clone(), false)); }
+            if !item.evidence.is_empty() { blocks.push((item.evidence.clone(), false)); }
+        }
+        blocks
+    });
+    if blocks.is_empty() { blocks.push(("暂无记录".into(), true)); }
+    let selection = app.task_selection.as_ref().map(|s| format!("{}:{}", s.task_id, s.node_id.as_deref().unwrap_or("")));
+    let key = (blocks, area.width.saturating_sub(2), app.view, app.selected, selection);
+    if cache.key.as_ref() != Some(&key) {
+        cache.lines.clear();
+        for (source, literal) in &key.0 {
+            cache.lines.extend(if *literal {
+                contract_literal(source, key.1 as usize, Role::Constraint, Status::None, true)
+            } else { natural_block(source, key.1 as usize, Role::Body).lines });
+        }
+        cache.key = Some(key);
+    }
     frame.render_widget(
-        Paragraph::new(safe_text(&text))
+        Paragraph::new(style_markdown(&cache.lines, app.light))
             .block(theme.block(" 说明 / 验证 ", app.panel == Panel::Evidence))
-            .style(Style::default().fg(theme.muted))
-            .wrap(Wrap { trim: false })
             .scroll((
                 if app.view == View::Tasks {
                     app.task_evidence_scroll
@@ -1314,6 +1400,209 @@ mod markdown_tests {
         }];
         let mapped = style_markdown(&lines, false);
         assert!(mapped[0].spans[0].content.chars().all(|c| !c.is_control()));
+    }
+}
+
+/// Human-started regression (NOT executed by this node):
+/// `cargo test --lib ui::text_surface_tests`
+/// Also run existing `ui::contract_tests` and `ui::markdown_tests` explicitly.
+/// Manual: in both themes, inspect current/history/streaming messages containing
+/// lists, fences, links, tables and CJK/emoji; search visible prose and `**source**`;
+/// confirm role labels survive, the final reply is not duplicated, and resizing
+/// reflows without changing input. Add two notes with an unfinished fence in the
+/// first and a heading in the second. Open README.md and a Rust file from the
+/// existing project snapshot, then review both fixed diffs (including merge
+/// preview without confirming). Inspect evidence with an unfinished summary
+/// fence and scope violations: unverified/authority warnings must remain literal.
+/// Scroll and switch theme without rebuilding, then edit content/search/selection
+/// or resize and confirm the cache updates. Cancel every authorization dialog.
+#[cfg(test)]
+mod text_surface_tests {
+    use super::*;
+    use crate::keymap::Keymap;
+
+    fn text(lines: &[SemanticLine]) -> String {
+        lines.iter().map(SemanticLine::text).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn complete_messages_keep_fences_roles_and_search_mapping() {
+        let records = vec![
+            ("┌─ 你".into(), 7),
+            ("**visible phrase**\n\n```rust\n*a_literal*\n# source\n```\n\n- second".into(), 3),
+            ("┌─ AI".into(), 8),
+            ("**answer**".into(), 4),
+        ];
+        for filter in ["visible phrase", "**visible phrase**", "*a_literal*"] {
+            let lines = record_layout(&records, 40, filter);
+            let output = text(&lines);
+            assert!(output.contains("┌─ 你"));
+            assert!(output.contains("│ *a_literal*"));
+            assert!(output.contains("│ # source"));
+            assert!(!output.contains("┌─ AI"));
+            assert!(lines.iter().any(|l| l.fragments.iter().any(|f| f.style.code)));
+        }
+        let lines = record_layout(&records, 12, "");
+        assert!(lines.iter().all(|l| l.width() <= 12));
+        for light in [false, true] {
+            let styled = style_markdown(&lines, light);
+            assert!(styled.iter().flat_map(|l| &l.spans).any(|s| s.content.contains("你") && s.style.fg == Some(Theme::new(light).accent)));
+            assert!(styled.iter().flat_map(|l| &l.spans).any(|s| s.content.contains("AI") && s.style.fg == Some(Theme::new(light).good)));
+        }
+    }
+
+    #[test]
+    fn notes_are_independent_and_risk_metadata_stays_literal() {
+        let records = vec![("```\nunfinished".into(), 0), ("# next note".into(), 0)];
+        let lines = record_layout(&records, 50, "");
+        assert!(lines.iter().any(|l| l.fragments.iter().any(|f| f.style.heading > 0 && f.text.contains("next note"))));
+        let records = vec![("验收：未验证 · 人工审核：待审".into(), 6),
+            ("```\n- [x] document only".into(), 0), ("仓内越界：src/outside.rs".into(), 6)];
+        let lines = record_layout(&records, 60, "document only");
+        assert!(text(&lines).contains("验收：未验证"));
+        assert!(text(&lines).contains("仓内越界"));
+        assert!(lines.iter().all(|l| l.context.status == Status::None));
+    }
+
+    #[test]
+    fn compact_titles_do_not_parse_status_and_truncate_explicitly() {
+        let line = queue_label("**中文标题 👩‍💻** · 未验证", true, 22, Theme::new(false));
+        let output: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(output.contains("未验证"));
+        assert!(!output.contains("**"));
+        let line = compact("**very long title** [link](https://example.test)", 8, Theme::new(false), Role::Body);
+        let output: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(output.ends_with('…'));
+        assert!(output.width() <= 8);
+    }
+
+    #[test]
+    fn cache_tracks_stream_content_width_search_but_not_scroll_theme() {
+        let mut app = App::empty(Keymap::default());
+        app.view = View::Tasks;
+        app.task = Some("**request**".into());
+        app.run.streaming_text = true;
+        app.run.text = "**partial**".into();
+        let mut cache = ReaderCache::default();
+        cache.prepare(&app, 40);
+        let initial = cache.builds;
+        assert!(text(cache.contract_lines.as_ref().unwrap()).contains("partial"));
+        app.light = !app.light;
+        app.task_scroll = 2;
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, initial);
+        app.run.text = "**completed**".into();
+        cache.prepare(&app, 40);
+        assert_eq!(cache.builds, initial + 1);
+        assert!(!text(cache.contract_lines.as_ref().unwrap()).contains("partial"));
+        cache.prepare(&app, 12);
+        assert_eq!(cache.builds, initial + 2);
+        app.filter = "completed".into();
+        cache.prepare(&app, 12);
+        assert_eq!(cache.builds, initial + 3);
+        assert!(text(cache.contract_lines.as_ref().unwrap()).contains("AI"));
+    }
+
+    #[test]
+    fn final_reply_is_not_rendered_twice_and_historical_records_are_complete() {
+        let mut app = App::empty(Keymap::default());
+        app.view = View::Tasks;
+        app.task = Some("request".into());
+        app.run.text = "**final reply**".into();
+        app.run.streaming_text = false;
+        app.history.push(crate::storage::Message { session: "session".into(), role: "assistant".into(), content: app.run.text.clone() });
+        assert_eq!(text(&record_layout(&app.task_text_blocks(), 80, "")).matches("final reply").count(), 1);
+        let mut old = crate::nodes::TaskRecord::legacy("old", "**old request**", "session");
+        old.history = app.history.clone();
+        app.tasks.push(old);
+        app.tasks.push(crate::nodes::TaskRecord::legacy("live", "live request", "session"));
+        app.task_selection = Some(crate::app::TaskSelection { task_id: "old".into(), node_id: None });
+        let output = text(&record_layout(&app.task_text_blocks(), 80, ""));
+        assert!(output.contains("old request"));
+        assert!(output.contains("┌─ AI"));
+        assert_eq!(output.matches("final reply").count(), 1);
+    }
+
+    #[test]
+    fn project_sources_and_fixed_review_diffs_stay_literal() {
+        let mut app = App::empty(Keymap::default());
+        app.items.push(crate::app::ReadingItem {
+            title: "README.md".into(), version: "fixed_snapshot".into(),
+            intent: "**intent**".into(), code: "**prose**\n\n- entry".into(),
+            diff: "+**literal_added**\n-# literal_removed".into(),
+            change: Some(crate::checkpoint::ChangeKind::Modified),
+            evidence: "**evidence**".into(), explanation: "**explanation**".into(),
+            read: false, scroll: 0, evidence_scroll: 0,
+        });
+        app.view = View::Project;
+        let mut cache = ReaderCache::default();
+        cache.prepare(&app, 60);
+        assert!(!text(cache.contract_lines.as_ref().unwrap()).contains("**prose**"));
+        app.items[0].title = "src/literal.rs".into();
+        cache.prepare(&app, 60);
+        assert!(cache.contract_lines.is_none());
+        assert!(cache.lines.iter().any(|(s, _)| s == "**prose**"));
+        app.view = View::Review;
+        app.page = Page::Code;
+        cache.prepare(&app, 60);
+        assert!(cache.contract_lines.is_none());
+        assert!(cache.lines.contains(&("+**literal_added**".into(), 1)));
+        assert!(cache.lines.contains(&("-# literal_removed".into(), -1)));
+        app.page = Page::Intent;
+        cache.prepare(&app, 60);
+        let output = text(cache.contract_lines.as_ref().unwrap());
+        assert!(output.contains("fixed_snapshot"));
+        assert!(output.ends_with("intent"));
+    }
+
+    #[test]
+    fn compact_labels_use_inline_not_block_syntax() {
+        for source in ["# literal heading", "- literal item", "---", "```rust"] {
+            let line = compact(source, 80, Theme::new(false), Role::Body);
+            let output: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(output, source);
+        }
+        let line = compact("**bold**\n[link](https://example.test)", 80, Theme::new(false), Role::Body);
+        let output: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(output.contains("bold"));
+        assert!(output.contains("https://example.test"));
+        assert!(!output.contains("**"));
+        assert!(!output.contains('\n'));
+    }
+
+    #[test]
+    fn chat_inline_styles_preserve_roles_and_search_keeps_workflow_metadata() {
+        let records = vec![
+            ("状态：已暂停 · 未验证".into(), 2),
+            ("┌─ 你".into(), 7),
+            ("# heading\n\n[link](https://example.test) and `code`".into(), 3),
+            ("┌─ AI".into(), 8),
+            ("# answer\n\n**reply**".into(), 4),
+        ];
+        let filtered = record_layout(&records, 60, "heading");
+        assert!(text(&filtered).contains("状态：已暂停 · 未验证"));
+        assert!(text(&filtered).contains("┌─ 你"));
+        assert!(!text(&filtered).contains("┌─ AI"));
+        for light in [false, true] {
+            let theme = Theme::new(light);
+            for line in record_layout(&records, 60, "") {
+                let expected = match line.context.role {
+                    Role::User => theme.accent,
+                    Role::Assistant => theme.good,
+                    _ => continue,
+                };
+                for fragment in line.fragments {
+                    assert_eq!(theme.markdown_style(line.context, fragment.style).fg, Some(expected));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn project_markdown_extensions_are_explicit() {
+        for path in ["README.md", "notes.MARKDOWN", "a.mdown", "a.mkd"] { assert!(is_markdown_path(path)); }
+        for path in ["src/a.rs", "a.md.rs", "Makefile", "a.txt", "a.mdx"] { assert!(!is_markdown_path(path)); }
+        assert!(block_matches(&natural_block("some **visible** phrase", 4, Role::Body), "some visible phrase"));
     }
 }
 

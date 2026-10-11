@@ -673,32 +673,35 @@ impl App {
         ))
     }
     pub fn node_evidence(&self) -> Option<String> {
+        Some(self.node_evidence_blocks()?.into_iter().map(|(text, _)| text).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// Trusted status records are separate from authored evidence/acceptance.
+    /// `true` identifies literal application metadata, not markup instructions.
+    pub fn node_evidence_blocks(&self) -> Option<Vec<(String, bool)>> {
         let node = self.selected_node()?;
         let version = self.review_checkpoint();
         let attempt = node.attempts.iter().find(|a| {
             a.checkpoint.as_deref() == version
                 || version.is_some_and(|v| a.previews.iter().any(|p| p == v))
         });
-        Some(format!(
-            "验收：{} · 人工审核：{}\n{}\n测试 Runner 未接入{}\n{}",
-            verification_label(attempt.map_or(node.verification, |a| a.verification)),
-            review_label(attempt.map_or(node.review, |a| a.review)),
-            node.contract
-                .acceptance
-                .iter()
-                .map(|c| format!("□ 未验证 · {c}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            attempt
-                .filter(|a| !a.scope_violations.is_empty())
-                .map(|a| format!("\n仓内越界：{}", a.scope_violations.join("、")))
-                .unwrap_or_default(),
-            if self.explain {
-                attempt.map(|a| a.summary.as_str()).unwrap_or("")
-            } else {
-                ""
-            }
-        ))
+        let mut blocks = vec![
+            (format!("验收：{} · 人工审核：{}",
+                verification_label(attempt.map_or(node.verification, |a| a.verification)),
+                review_label(attempt.map_or(node.review, |a| a.review))), true),
+            ("测试 Runner 未接入；文档复选框不代表真实验证或人工批准。".into(), true),
+        ];
+        if let Some(a) = attempt.filter(|a| !a.scope_violations.is_empty()) {
+            blocks.push((format!("仓内越界：{}", a.scope_violations.join("、")), true));
+        }
+        for (index, acceptance) in node.contract.acceptance.iter().enumerate() {
+            blocks.push((format!("□ 未验证 · 验收条件 {}", index + 1), true));
+            blocks.push((acceptance.clone(), false));
+        }
+        if self.explain && let Some(a) = attempt {
+            blocks.push((a.summary.clone(), false));
+        }
+        Some(blocks)
     }
     fn request_node_approval(&mut self) {
         let Some(selection) = self.task_selection.clone() else {
@@ -1259,7 +1262,9 @@ impl App {
     }
 
     /// Semantic role tags, not guesses based on message text.
-    pub fn task_lines(&self) -> Vec<(String, i8)> {
+    /// Complete natural-language records; numeric roles are domain message kinds,
+    /// not terminal styles. Keeping records intact protects fences and lists.
+    pub fn task_text_blocks(&self) -> Vec<(String, i8)> {
         if let Some(description) = self.node_description() {
             return description.lines().map(|l| (l.to_owned(), 2)).collect();
         }
@@ -1267,7 +1272,8 @@ impl App {
             && self.tasks.last().is_some_and(|live| live.id != selected.id)
         {
             let mut lines = vec![
-                (format!("任务：{}", selected.prompt), 2),
+                ("任务需求".into(), 2),
+                (selected.prompt.clone(), 0),
                 (format!("状态：{}", task_state_label(selected.state)), 2),
                 (String::new(), 0),
             ];
@@ -1281,7 +1287,7 @@ impl App {
                 } else if m.role == "assistant" {
                     ("AI", 4)
                 } else {
-                    ("系统", 2)
+                    ("系统", 5)
                 };
                 lines.push((
                     format!("┌─ {label}"),
@@ -1293,7 +1299,7 @@ impl App {
                         2
                     },
                 ));
-                lines.extend(m.content.lines().map(|l| (format!("│ {l}"), role)));
+                lines.push((m.content.clone(), role));
                 lines.push((String::new(), 0));
             }
             return lines;
@@ -1311,10 +1317,7 @@ impl App {
             RunStatus::Aborted => "已中断",
             RunStatus::Failed => "失败",
         };
-        let mut lines: Vec<_> = format!("任务：{task}")
-            .split('\n')
-            .map(|line| (line.to_owned(), 2))
-            .collect();
+        let mut lines = vec![("任务需求".into(), 2), (task.clone(), 0)];
         lines.extend(vec![
             (
                 format!(
@@ -1338,27 +1341,27 @@ impl App {
             let (label, role, header) = match message.role.as_str() {
                 "user" => ("你", 3, 7),
                 "assistant" => ("AI", 4, 8),
-                _ => ("系统", 2, 2),
+                _ => ("系统", 5, 2),
             };
             lines.push((format!("┌─ {label}"), header));
-            lines.extend(
-                message
-                    .content
-                    .split('\n')
-                    .map(|line| (format!("│ {line}"), role)),
-            );
+            lines.push((message.content.clone(), role));
             lines.push((String::new(), 0));
         }
         if self.run.streaming_text && !self.run.text.trim().is_empty() {
             lines.push(("┌─ AI · 正在回复".into(), 8));
-            lines.extend(
-                self.run
-                    .text
-                    .split('\n')
-                    .map(|line| (format!("│ {line}"), 4)),
-            );
+            lines.push((self.run.text.clone(), 4));
         }
         lines
+    }
+
+    /// Legacy plain-text consumers retain their line-oriented representation.
+    pub fn task_lines(&self) -> Vec<(String, i8)> {
+        self.task_text_blocks().into_iter().flat_map(|(text, role)| {
+            let legacy_role = if role == 5 || (role == 0 && text.starts_with("任务：")) { 2 } else { role };
+            text.split('\n').map(|line| {
+                (if matches!(role, 3 | 4 | 5) { format!("│ {line}") } else { line.to_owned() }, legacy_role)
+            }).collect::<Vec<_>>()
+        }).collect()
     }
 
     pub fn body(&self) -> String {
