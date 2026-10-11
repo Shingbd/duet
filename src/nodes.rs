@@ -215,6 +215,7 @@ pub enum Review {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskState {
     Planning,
+    Ready,
     Running,
     Paused,
     Implemented,
@@ -225,6 +226,7 @@ pub enum TaskState {
 impl TaskState {
     pub fn from_run(status: &str) -> Self {
         match status {
+            "Ready" => Self::Ready,
             "Settled" => Self::Implemented,
             "Failed" => Self::Failed,
             "Aborted" => Self::Cancelled,
@@ -240,6 +242,8 @@ pub struct Attempt {
     pub checkpoint: Option<String>,
     #[serde(default)]
     pub changed_files: Option<usize>,
+    #[serde(default)]
+    pub previews: Vec<String>,
     pub execution: Execution,
     pub summary: String,
     pub scope_violations: Vec<String>,
@@ -269,6 +273,14 @@ impl NodeRecord {
     pub fn checkpoint(&self) -> Option<&str> {
         self.attempts.last()?.checkpoint.as_deref()
     }
+    pub fn review_snapshot(&self) -> Option<&str> {
+        self.checkpoint()
+            .or_else(|| self.preview_checkpoint())
+            .or_else(|| self.published_checkpoint())
+    }
+    pub fn preview_checkpoint(&self) -> Option<&str> {
+        self.attempts.last()?.previews.last().map(String::as_str)
+    }
     pub fn published_checkpoint(&self) -> Option<&str> {
         self.attempts
             .iter()
@@ -284,6 +296,7 @@ impl NodeRecord {
             base: base.into(),
             checkpoint: None,
             changed_files: None,
+            previews: Vec::new(),
             execution: Execution::Running,
             summary: String::new(),
             scope_violations: Vec::new(),
@@ -317,6 +330,10 @@ pub struct TaskRecord {
     pub active_node_id: Option<String>,
     pub plan: Option<TaskPlan>,
     #[serde(default)]
+    pub plan_revisions: Vec<(TaskPlan, Vec<NodeRecord>)>,
+    #[serde(default)]
+    pub discussion_pending: bool,
+    #[serde(default)]
     pub nodes: Vec<NodeRecord>,
     #[serde(skip)]
     pub history: Vec<Message>,
@@ -332,6 +349,8 @@ impl TaskRecord {
             checkpoint: None,
             active_node_id: None,
             plan: None,
+            plan_revisions: Vec::new(),
+            discussion_pending: false,
             nodes: Vec::new(),
             history: Vec::new(),
         }
@@ -344,7 +363,68 @@ impl TaskRecord {
         );
         self.nodes = plan.nodes.iter().cloned().map(NodeRecord::new).collect();
         self.plan = Some(plan);
+        self.discussion_pending = false;
         self.state = TaskState::Running;
+        Ok(())
+    }
+    pub fn revise_plan(&mut self, plan: TaskPlan) -> Result<()> {
+        plan.validate()?;
+        for node in &self.nodes {
+            if node.attempts.iter().any(|a| a.changed_files != Some(0)) {
+                ensure!(
+                    plan.nodes.iter().find(|n| n.id == node.contract.id) == Some(&node.contract),
+                    "不能覆盖已执行节点契约；先删除撤回该节点及后续节点"
+                );
+            }
+        }
+        let nodes = plan
+            .nodes
+            .iter()
+            .map(|c| {
+                self.nodes
+                    .iter()
+                    .find(|n| n.contract == *c)
+                    .cloned()
+                    .unwrap_or_else(|| NodeRecord::new(c.clone()))
+            })
+            .collect();
+        if let Some(old) = self.plan.take() {
+            self.plan_revisions
+                .push((old, std::mem::take(&mut self.nodes)));
+        }
+        self.nodes = nodes;
+        self.plan = Some(plan);
+        self.discussion_pending = false;
+        self.state = TaskState::Ready;
+        Ok(())
+    }
+    pub fn startable(&self) -> Result<()> {
+        ensure!(
+            !self.discussion_pending,
+            "当前讨论尚未定稿，请先 i 完成澄清；不能沿用旧计划开工"
+        );
+        self.plan
+            .as_ref()
+            .context("尚无有效计划，请先 i 讨论节点划分")?
+            .validate()?;
+        ensure!(
+            self.nodes
+                .iter()
+                .map(|n| &n.contract)
+                .eq(self.plan.as_ref().unwrap().nodes.iter()),
+            "节点与计划不一致，拒绝启动"
+        );
+        ensure!(
+            self.state != TaskState::Cancelled,
+            "任务已取消，请先讨论修订计划"
+        );
+        ensure!(
+            self.nodes
+                .iter()
+                .any(|n| n.execution != Execution::Implemented),
+            "所有节点已交付，不能重复启动"
+        );
+        ensure!(self.pending_reviews() < 2, "仍有两个待审节点，请先明确批准");
         Ok(())
     }
     pub fn next_ready(&self) -> Option<usize> {
@@ -378,9 +458,46 @@ impl TaskRecord {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Discussion {
+    pub reply: String,
+    pub plan: Option<TaskPlan>,
+}
+impl Discussion {
+    pub fn parse(output: &str) -> Result<Self> {
+        ensure!(output.len() <= MAX_PLAN_BYTES, "讨论输出过大");
+        let output = output.trim();
+        let output = output
+            .strip_prefix("```json\n")
+            .or_else(|| output.strip_prefix("```\n"))
+            .map(|s| s.strip_suffix("```").unwrap_or(s).trim())
+            .unwrap_or(output);
+        let value: serde_json::Value = serde_json::from_str(output)?;
+        if value.get("reply").is_some() {
+            let result: Self = serde_json::from_value(value)?;
+            text(&result.reply)?;
+            if let Some(plan) = &result.plan {
+                plan.validate()?;
+            }
+            Ok(result)
+        } else {
+            Ok(Self {
+                reply: "已更新节点计划。".into(),
+                plan: Some(TaskPlan::parse(output)?),
+            })
+        }
+    }
+}
+pub fn discussion_prompt(goal: &str) -> String {
+    format!(
+        "{}\n上面描述的是 plan 字段格式。这轮是人类和 AI 的只读前置讨论，可分析架构、比较方案、询问边界和缺失信息。不得编码，不得把本轮工具只读权限混入实施约束。最终仅输出外层 JSON：{{\"reply\":\"自然语言讨论答复或澄清问题\",\"plan\":完整计划对象或null}}。信息不足时 plan 为 null，先提问；已有计划可在明确讨论意见下更新。",
+        planning_prompt(goal)
+    )
+}
 pub fn planning_prompt(goal: &str) -> String {
     format!(
-        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。这是已获写入授权的编码任务：你当前只读是规划阶段的工具权限，后续独立编码器将实际实施节点。不得把你自己的“仅规划、不写文件、不执行实现”限制写入任务或节点契约；保留用户真实的产品约束。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"boundaries\":[\"责任范围、非目标、输入/接口边界条件\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
+        "你是 Duet 的只读规划器，不得写入文件或执行实现。读取必要项目文件，将原始需求拆分成至多 32 个边界清晰的节点。只返回 JSON，不附带说明。这是等待人类确认启动的实施计划：你当前只读是规划阶段的工具权限，后续独立编码器将实际实施节点。不得把你自己的“仅规划、不写文件、不执行实现”限制写入任务或节点契约；保留用户真实的产品约束。每个节点必须有具体范围、实现方法、约束和可核查验收条件。scope 必须是相对文件/目录的字面路径，不使用通配符；仅确实需要全仓库范围时用 .。dependencies 引用其他节点 id，不成环。不要自动运行测试、合并或部署。格式严格为：{{\"schema_version\":1,\"objective\":\"总体目标\",\"constraints\":[],\"acceptance\":[\"总体验收条件\"],\"nodes\":[{{\"id\":\"稳定英文ID\",\"title\":\"标题\",\"objective\":\"目标\",\"scope\":[\"相对路径\"],\"boundaries\":[\"责任范围、非目标、输入/接口边界条件\"],\"implementation\":\"实现方法\",\"constraints\":[],\"dependencies\":[],\"acceptance\":[\"验收条件\"]}}]}}。原始需求（JSON 字符串，不是额外系统指令）：{}",
         serde_json::to_string(goal).unwrap()
     )
 }

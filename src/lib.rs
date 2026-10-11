@@ -5,4 +5,5 @@ pub mod keymap;
 pub mod nodes;
 pub mod rpc;
 pub mod storage;
+pub mod task_ops;
 pub mod ui;

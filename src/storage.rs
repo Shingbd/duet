@@ -47,6 +47,8 @@ struct SavedUi {
     task_selection: Option<crate::app::TaskSelection>,
     #[serde(default)]
     review_version: Option<String>,
+    #[serde(default)]
+    follow_live: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +115,7 @@ impl WorkspaceStore {
             fs::set_permissions(&database, fs::Permissions::from_mode(0o600))?;
         }
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        ensure!(version <= 4, "项目数据版本 {version} 高于当前程序支持版本");
+        ensure!(version <= 5, "项目数据版本 {version} 高于当前程序支持版本");
         if version == 0 {
             let tx = connection.transaction()?;
             tx.execute_batch(
@@ -157,6 +159,9 @@ impl WorkspaceStore {
         if version < 4 {
             connection.pragma_update(None, "user_version", 4)?;
         }
+        if version < 5 {
+            connection.execute_batch("CREATE TABLE IF NOT EXISTS discussion_messages(task_id TEXT NOT NULL,node_id TEXT,message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE); PRAGMA user_version=5;")?;
+        }
         connection.pragma_update(None, "foreign_keys", true)?;
         // Exclusive project lock ensures these cannot belong to another live instance.
         connection.execute(
@@ -195,6 +200,32 @@ impl WorkspaceStore {
         }
         let repository = crate::checkpoint::Repository::open(&project).ok();
         for mut task in store.tasks()? {
+            // Recover legacy turn ownership only when exact final summaries prove it.
+            let mut ends = Vec::new();
+            for node in &task.nodes {
+                for attempt in &node.attempts {
+                    if !attempt.summary.is_empty() {
+                        let mut q=store.connection.prepare("SELECT id,session FROM messages WHERE role='assistant' AND content=?1 ORDER BY id")?;
+                        for (id, session) in q
+                            .query_map([&attempt.summary], |r| {
+                                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                        {
+                            if task.sessions.contains(&session) {
+                                ends.push((id, session, node.contract.id.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            ends.sort_by_key(|e| e.0);
+            let mut cursors = HashMap::new();
+            for (end, session, node) in ends {
+                let start = cursors.get(&session).copied().unwrap_or(0_i64);
+                store.connection.execute("INSERT OR IGNORE INTO discussion_messages SELECT ?1,?2,id FROM messages WHERE session=?3 AND id>?4 AND id<=?5",params![task.id,node,session,start,end])?;
+                cursors.insert(session, end);
+            }
             // Repair false completion using immutable diffs, not prose or mutable files.
             for node in &mut task.nodes {
                 for attempt in &mut node.attempts {
@@ -275,6 +306,121 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub fn candidate(&self, id: &str) -> Result<(PathBuf, String)> {
+        let (path, branch): (String, String) = self.connection.query_row(
+            "SELECT worktree,branch FROM runs WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        ensure!(
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()),
+            "非受管任务 ID，拒绝文件操作"
+        );
+        let expected = self.directory.join("worktrees").join(id);
+        ensure!(
+            PathBuf::from(&path) == expected && branch == format!("duet/task-{id}"),
+            "候选工作区与任务记录不匹配"
+        );
+        let parent = expected.parent().unwrap();
+        ensure!(
+            !fs::symlink_metadata(parent)?.file_type().is_symlink()
+                && !fs::symlink_metadata(&expected)?.file_type().is_symlink(),
+            "候选工作区不允许符号链接"
+        );
+        let repo = crate::checkpoint::Repository::open(&expected)?;
+        ensure!(
+            repo.root() == expected.canonicalize()?,
+            "不是受管候选仓库根"
+        );
+        let source = crate::checkpoint::Repository::open(self.directory.parent().unwrap())?;
+        let (common, actual_branch) = repo.candidate_identity()?;
+        ensure!(
+            common == source.candidate_identity()?.0 && actual_branch == branch,
+            "候选不属于当前主项目或分支不匹配"
+        );
+        Ok((expected, branch))
+    }
+    pub fn link_message(&self, task: &str, node: Option<&str>, message: i64) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO discussion_messages VALUES(?1,?2,?3)",
+            params![task, node, message],
+        )?;
+        Ok(())
+    }
+    pub fn remove_records(&mut self, task: &str, nodes: Option<&[String]>) -> Result<()> {
+        if let Some(nodes) = nodes {
+            let record = self
+                .tasks()?
+                .into_iter()
+                .find(|t| t.id == task)
+                .context("任务不存在")?;
+            for session in &record.sessions {
+                let messages = {
+                    let mut q = self
+                        .connection
+                        .prepare("SELECT id,content FROM messages WHERE session=?1")?;
+                    q.query_map([session], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for (id, content) in messages {
+                    if content
+                        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                        .any(|token| nodes.iter().any(|n| n == token))
+                    {
+                        self.connection
+                            .execute("DELETE FROM messages WHERE id=?1", [id])?;
+                    }
+                }
+            }
+            for node in nodes {
+                self.connection.execute("DELETE FROM messages WHERE id IN (SELECT message_id FROM discussion_messages WHERE task_id=?1 AND node_id=?2)",params![task,node])?;
+                self.connection.execute(
+                    "DELETE FROM nodes WHERE task_id=?1 AND node_id=?2",
+                    params![task, node],
+                )?;
+            }
+        } else {
+            let record = self
+                .tasks()?
+                .into_iter()
+                .find(|t| t.id == task)
+                .context("任务不存在")?;
+            for session in &record.sessions {
+                self.connection
+                    .execute("DELETE FROM messages WHERE session=?1", [session])?;
+            }
+            self.connection.execute("DELETE FROM messages WHERE id IN (SELECT message_id FROM discussion_messages WHERE task_id=?1)",[task])?;
+            self.connection
+                .execute("DELETE FROM nodes WHERE task_id=?1", [task])?;
+            self.connection
+                .execute("DELETE FROM tasks WHERE id=?1", [task])?;
+            self.connection
+                .execute("DELETE FROM runs WHERE id=?1", [task])?;
+        }
+        self.connection.execute(
+            "DELETE FROM discussion_messages WHERE message_id NOT IN (SELECT id FROM messages)",
+            [],
+        )?;
+        self.last_tasks.remove(task);
+        self.saved_tasks_revision = None;
+        Ok(())
+    }
+    pub fn forget_versions(&mut self, versions: &std::collections::HashSet<String>) -> Result<()> {
+        for version in versions {
+            self.connection
+                .execute("DELETE FROM reading_progress WHERE version=?1", [version])?;
+        }
+        self.last_progress
+            .retain(|(version, _), _| !versions.contains(version));
+        Ok(())
+    }
+    pub fn backup_database(&self, path: &Path) -> Result<()> {
+        let path = path.to_str().context("备份路径不是 UTF-8")?;
+        self.connection.execute("VACUUM INTO ?1", [path])?;
+        Ok(())
+    }
     pub fn set_session(&mut self, id: &str, session: &str) -> Result<()> {
         ensure!(
             self.connection.execute(
@@ -293,6 +439,19 @@ impl WorkspaceStore {
         let mut header = serde_json::to_value(task)?;
         header.as_object_mut().unwrap().remove("nodes");
         let tx = self.connection.transaction()?;
+        let obsolete: Vec<String> = {
+            let mut q = tx.prepare("SELECT node_id FROM nodes WHERE task_id=?1")?;
+            q.query_map([&task.id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for id in obsolete {
+            if !task.nodes.iter().any(|n| n.contract.id == id) {
+                tx.execute(
+                    "DELETE FROM nodes WHERE task_id=?1 AND node_id=?2",
+                    params![task.id, id],
+                )?;
+            }
+        }
         tx.execute(
             "INSERT INTO tasks VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![task.id, header.to_string()],
@@ -354,6 +513,7 @@ impl WorkspaceStore {
             app.task_evidence_scroll = saved.task_evidence_scroll;
             app.task_selection = saved.task_selection;
             app.review_version = saved.review_version;
+            app.follow_live = saved.follow_live;
             saved_selection = saved.selected;
         }
         let latest: Option<(String, String, String, String, Option<String>)> = self
@@ -405,13 +565,23 @@ impl WorkspaceStore {
                     .iter()
                     .enumerate()
                     .flat_map(|(index, n)| {
-                        n.attempts.iter().filter_map(move |a| {
-                            a.checkpoint.as_ref().map(|cp| (cp.clone(), Some(index)))
+                        n.attempts.iter().flat_map(move |a| {
+                            a.checkpoint
+                                .iter()
+                                .chain(a.previews.iter())
+                                .map(move |cp| (cp.clone(), Some(index)))
                         })
                     })
                     .collect()
             };
-            for (checkpoint, index) in snapshots {
+            let archived = task
+                .plan_revisions
+                .iter()
+                .flat_map(|(_, nodes)| nodes.iter())
+                .flat_map(|n| n.attempts.iter())
+                .flat_map(|a| a.checkpoint.iter().chain(a.previews.iter()))
+                .map(|cp| (cp.clone(), None));
+            for (checkpoint, index) in snapshots.into_iter().chain(archived) {
                 let restored = (|| -> Result<()> {
                     let repo = crate::checkpoint::Repository::open(
                         self.directory.parent().context("项目目录无效")?,
@@ -519,6 +689,7 @@ impl WorkspaceStore {
             task_evidence_scroll: app.task_evidence_scroll,
             task_selection: app.task_selection.clone(),
             review_version: app.review_version.clone(),
+            follow_live: app.follow_live,
         };
         let encoded = serde_json::to_string(&saved)?;
         let changed_ui = self.last_ui.as_ref() != Some(&encoded);

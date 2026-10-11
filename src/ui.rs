@@ -198,7 +198,20 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                 format!(
                     " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
-                        format!("{} 批准节点 · ", app.keymap.hint(Action::ApproveNode))
+                        format!(
+                            "{} 批准 · {} {} · {} 删除 · ",
+                            app.keymap.hint(Action::ApproveNode),
+                            app.keymap.hint(Action::FollowLive),
+                            if app.follow_live { "跟随" } else { "固定" },
+                            app.keymap.hint(Action::DeleteSelected)
+                        )
+                    } else if app.view == View::Tasks {
+                        format!(
+                            "{} 讨论 · {} 启动 · {} 删除 · ",
+                            app.keymap.hint(Action::Reply),
+                            app.keymap.hint(Action::StartTask),
+                            app.keymap.hint(Action::DeleteSelected)
+                        )
                     } else {
                         String::new()
                     },
@@ -226,7 +239,9 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             popup(frame, theme, " 快捷键 · Esc 关闭 ", lines, 64, 24);
         }
         Mode::Message { text } => {
-            let title = if matches!(
+            let title = if app.planning_only {
+                " 只读讨论计划 · 代码可能外发 · Enter 发送 "
+            } else if matches!(
                 app.run.status,
                 crate::rpc::RunStatus::Paused | crate::rpc::RunStatus::Pausing
             ) {
@@ -266,14 +281,50 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
         Mode::ConfirmCode { prompt } => popup(
             frame,
             theme,
-            " 授权 AI 编码 ",
+            " 开始只读讨论与规划 ",
             vec![
                 Line::from(safe_text(prompt)),
                 Line::from("代码可能外发 · 文件工具非安全沙箱"),
-                Line::from("Enter 授权 · Esc 取消"),
+                Line::from("Enter 只读讨论 · 编码需另按 s 确认 · Esc 取消"),
             ],
             72,
             7,
+        ),
+        Mode::ConfirmStart { task_id, .. } => {
+            let task = app.tasks.iter().find(|t| &t.id == task_id);
+            let mut lines = vec![
+                Line::from("确认当前计划，授权模型修改独立候选工作区；不自动测试或合并。"),
+                Line::from("代码可能外发；文件工具并非 OS 安全沙箱。"),
+            ];
+            if let Some(t) = task {
+                for n in &t.nodes {
+                    lines.push(Line::from(format!(
+                        "{} · {} · {}",
+                        n.contract.id,
+                        n.contract.title,
+                        n.contract.scope.join("、")
+                    )));
+                }
+            }
+            lines.push(Line::from("Enter 启动实施 · Esc 返回讨论"));
+            popup(frame, theme, " 启动已有任务计划 ", lines, 90, 18);
+        }
+        Mode::ConfirmDelete { selection } => popup(
+            frame,
+            theme,
+            " 删除并撤回候选修改 ",
+            vec![
+                Line::from(if selection.node_id.is_some() {
+                    "删除所选节点及其全部后续节点（顺序版本有依赖）。"
+                } else {
+                    "删除整个任务、全部节点及其候选工作区。"
+                }),
+                Line::from("删除相关讨论与预览；先备份。主项目和其他任务不受影响。"),
+                Line::from("运行中的所选任务将停止，候选中的未追踪/忽略文件一并撤回。"),
+                Line::from("Enter 确认删除 · Esc 取消"),
+            ],
+            90,
+            9,
         ),
         Mode::ConfirmRead => popup(
             frame,

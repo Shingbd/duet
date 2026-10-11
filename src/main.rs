@@ -302,19 +302,123 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             {
                 coding.cancel(&mut app)?;
             }
+            if let Some(selection) = app.requested_delete.take() {
+                let result = (|| -> Result<()> {
+                    if coding.as_ref().is_some_and(|c| c.id == selection.task_id)
+                        && let Some(mut c) = coding.take()
+                    {
+                        c.stop(&mut app, &mut store)?;
+                    }
+                    duet_workbench::task_ops::delete_selection(&selection, &mut app, &mut store)
+                })();
+                if let Err(e) = result {
+                    app.status = format!("删除未完成：{e}");
+                }
+            }
+            if let Some((id, confirmed_plan)) = app.requested_start.take() {
+                let result = (|| -> Result<CodingRun> {
+                    ensure!(
+                        coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "请先暂停并退出当前执行；不能同时启动第二个编码会话"
+                    );
+                    let task = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .context("任务不存在")?;
+                    ensure!(
+                        serde_json::to_string(&task.plan)? == confirmed_plan,
+                        "计划在确认期间改变，请重新 s 确认"
+                    );
+                    task.startable()?;
+                    if let Some(mut c) = coding.take() {
+                        c.stop(&mut app, &mut store)?;
+                    }
+                    CodingRun::open_existing(
+                        &id,
+                        Path::new("pi"),
+                        None,
+                        false,
+                        Duration::from_secs(600),
+                        &mut store,
+                        &mut app,
+                    )
+                })();
+                match result {
+                    Ok(c) => coding = Some(c),
+                    Err(e) => {
+                        if coding.is_none() {
+                            app.agent_connected = false;
+                            app.run.status = duet_workbench::rpc::RunStatus::Failed;
+                        }
+                        app.status = format!("无法启动：{e}");
+                    }
+                }
+            }
             for control in std::mem::take(&mut app.controls) {
                 let draft = if let RunControl::Say(text) = &control {
                     Some(text.clone())
                 } else {
                     None
                 };
-                let result = if let Some(coding) = &mut coding {
-                    coding.interact(control, &mut app, &mut store)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "当前没有可交互的 Pi 会话；请先用 :code 启动任务"
-                    ))
-                };
+                let result = (|| -> Result<()> {
+                    if let RunControl::Say(message) = &control {
+                        let selection = app.selected_task().map(|t| t.id.clone());
+                        let current = coding
+                            .as_ref()
+                            .is_some_and(|c| selection.as_deref() == Some(&c.id));
+                        if current
+                            && coding.as_ref().is_some_and(|c| {
+                                !c.is_finished() || app.planning_only || app.agent_connected
+                            })
+                        {
+                            return coding
+                                .as_mut()
+                                .unwrap()
+                                .interact(control, &mut app, &mut store);
+                        }
+                        ensure!(
+                            coding.as_ref().is_none_or(|c| c.is_finished()),
+                            "另一个任务正在执行，未发送讨论"
+                        );
+                        if let Some(mut c) = coding.take() {
+                            c.stop(&mut app, &mut store)?;
+                        }
+                        if let Some(id) = selection {
+                            let mut c = CodingRun::open_existing(
+                                &id,
+                                Path::new("pi"),
+                                None,
+                                true,
+                                Duration::from_secs(600),
+                                &mut store,
+                                &mut app,
+                            )?;
+                            c.discuss(message, &mut app, &mut store)?;
+                            coding = Some(c);
+                        } else {
+                            let project = store
+                                .directory()
+                                .parent()
+                                .context("项目目录无效")?
+                                .to_owned();
+                            coding = Some(CodingRun::start_drafting(
+                                &project,
+                                Path::new("pi"),
+                                None,
+                                message,
+                                Duration::from_secs(600),
+                                &mut store,
+                                &mut app,
+                            )?);
+                        }
+                        Ok(())
+                    } else if let Some(c) = &mut coding {
+                        c.interact(control, &mut app, &mut store)
+                    } else {
+                        Err(anyhow::anyhow!("当前无执行会话；已有计划请按 s 启动"))
+                    }
+                })();
                 if let Err(error) = result {
                     app.status = format!("操作未完成：{error}");
                     if let Some(text) = draft {
@@ -328,7 +432,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     .parent()
                     .context("项目目录无效")?
                     .to_owned();
-                match CodingRun::start_planning(
+                if let Some(mut c) = coding.take() {
+                    c.stop(&mut app, &mut store)?;
+                }
+                match CodingRun::start_drafting(
                     &project,
                     Path::new("pi"),
                     None,
@@ -339,6 +446,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 ) {
                     Ok(new_run) => coding = Some(new_run),
                     Err(error) => {
+                        app.agent_connected = false;
                         app.run.status = duet_workbench::rpc::RunStatus::Failed;
                         app.status = format!("无法开始：{error}");
                     }

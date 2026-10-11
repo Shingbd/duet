@@ -91,6 +91,103 @@ impl Repository {
         Ok(())
     }
 
+    /// Only call after WorkspaceStore::candidate verifies this is an owned worktree.
+    pub fn restore_candidate(&self, revision: &str) -> Result<()> {
+        let snapshot = self.resolve_snapshot(revision)?;
+        self.git(
+            &[
+                "restore",
+                "--source",
+                &snapshot.commit,
+                "--staged",
+                "--worktree",
+                "--",
+                ".",
+            ],
+            None,
+        )?;
+        self.git(&["clean", "-fdx", "--", "."], None)?;
+        Ok(())
+    }
+    pub fn candidate_identity(&self) -> Result<(PathBuf, String)> {
+        let common = self.git(&["rev-parse", "--git-common-dir"], None)?;
+        let common = PathBuf::from(common.trim());
+        let common = if common.is_absolute() {
+            common
+        } else {
+            self.root.join(common)
+        };
+        Ok((
+            common.canonicalize()?,
+            self.git(&["rev-parse", "--abbrev-ref", "HEAD"], None)?
+                .trim()
+                .into(),
+        ))
+    }
+    pub fn remove_candidate(&self, path: &Path, branch: &str) -> Result<()> {
+        self.git(
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                path.to_str().context("候选路径不是 UTF-8")?,
+            ],
+            None,
+        )?;
+        self.git(&["branch", "-D", branch], None)?;
+        Ok(())
+    }
+    pub fn bundle_candidate(
+        &self,
+        path: &Path,
+        branch: &str,
+        commits: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let refs = self.git(
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/duet/checkpoints/",
+            ],
+            None,
+        )?;
+        let mut args = vec![
+            "bundle",
+            "create",
+            path.to_str().context("备份路径不是 UTF-8")?,
+            branch,
+        ];
+        for line in refs.lines() {
+            if let Some((reference, commit)) = line.split_once(' ')
+                && commits.contains(commit)
+            {
+                args.push(reference);
+            }
+        }
+        self.git(&args, None)?;
+        Ok(())
+    }
+    pub fn remove_checkpoint_refs(
+        &self,
+        commits: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let refs = self.git(
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/duet/checkpoints/",
+            ],
+            None,
+        )?;
+        for line in refs.lines() {
+            if let Some((reference, commit)) = line.split_once(' ')
+                && commits.contains(commit)
+            {
+                self.git(&["update-ref", "-d", reference, commit], None)?;
+            }
+        }
+        Ok(())
+    }
     pub fn changed_paths(&self) -> Result<Vec<String>> {
         let tracked = self.git(&["diff", "--name-only", "-z", "HEAD", "--"], None)?;
         let untracked = self.git(&["ls-files", "--others", "--exclude-standard", "-z"], None)?;

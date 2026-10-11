@@ -4,5 +4,8 @@
   "help": ["?"],
   "pause": ["p"],
   "reply": ["i"],
-  "approve_node": ["a"]
+  "approve_node": ["a"],
+  "start_task": ["s"],
+  "delete_selected": ["d"],
+  "follow_live": ["v"]
 }

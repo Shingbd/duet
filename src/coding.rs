@@ -2,7 +2,9 @@ use crate::{
     app::{App, RunControl},
     checkpoint::Repository,
     checkpoint::Snapshot,
-    nodes::{Execution, TaskPlan, TaskRecord, TaskState, planning_prompt},
+    nodes::{
+        Discussion, Execution, TaskPlan, TaskRecord, TaskState, discussion_prompt, planning_prompt,
+    },
     rpc::{PiClient, RunStatus, message_text},
     storage::{Message, WorkspaceStore},
 };
@@ -42,6 +44,9 @@ pub struct CodingRun {
     node_base: Option<Snapshot>,
     plan_output: String,
     waiting: bool,
+    hold_plan: bool,
+    live_due: Option<Instant>,
+    discussion_node: Option<String>,
     pub worktree: PathBuf,
     pub branch: String,
     pub session: String,
@@ -70,7 +75,7 @@ impl CodingRun {
         app: &mut App,
     ) -> Result<Self> {
         Self::start_internal(
-            project, executable, model, prompt, timeout, store, app, false,
+            project, executable, model, prompt, timeout, store, app, false, false,
         )
     }
     pub fn start_planning(
@@ -83,8 +88,140 @@ impl CodingRun {
         app: &mut App,
     ) -> Result<Self> {
         Self::start_internal(
-            project, executable, model, prompt, timeout, store, app, true,
+            project, executable, model, prompt, timeout, store, app, true, false,
         )
+    }
+    pub fn start_drafting(
+        project: &Path,
+        executable: &Path,
+        model: Option<&str>,
+        prompt: &str,
+        timeout: Duration,
+        store: &mut WorkspaceStore,
+        app: &mut App,
+    ) -> Result<Self> {
+        Self::start_internal(
+            project, executable, model, prompt, timeout, store, app, true, true,
+        )
+    }
+    /// Reopen a saved candidate only after an explicit human action, never at restore.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_existing(
+        id: &str,
+        executable: &Path,
+        model: Option<&str>,
+        discussion: bool,
+        timeout: Duration,
+        store: &mut WorkspaceStore,
+        app: &mut App,
+    ) -> Result<Self> {
+        let task = app
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .context("任务不存在")?;
+        if !discussion {
+            task.startable()?;
+        }
+        let (worktree, branch) = store.candidate(id)?;
+        let repo = Repository::open(&worktree)?;
+        let mut client = if discussion {
+            PiClient::spawn_planner(
+                executable,
+                &worktree,
+                &store.directory().join("sessions"),
+                model,
+            )?
+        } else {
+            PiClient::spawn_coder(
+                executable,
+                &worktree,
+                &store.directory().join("sessions"),
+                model,
+            )?
+        };
+        let state = client.get_state(Duration::from_secs(20))?;
+        ensure!(state["model"].is_object(), "Pi 模型不可用");
+        let session = state["sessionId"]
+            .as_str()
+            .context("Pi 会话 ID 缺失")?
+            .to_owned();
+        store.set_session(id, &session)?;
+        let task = app.tasks.iter_mut().find(|t| t.id == id).unwrap();
+        task.sessions.push(session.clone());
+        let checkpoint = task.checkpoint.clone();
+        app.task = Some(task.prompt.clone());
+        app.history = task.history.clone();
+        app.queued_corrections = 0;
+        app.run = Default::default();
+        app.agent_connected = true;
+        app.planning_only = discussion;
+        store.save_task(task)?;
+        let mut run = Self {
+            client,
+            phase: Phase::Planning,
+            executable: executable.into(),
+            model: model.map(str::to_owned),
+            node_base: None,
+            plan_output: String::new(),
+            waiting: false,
+            hold_plan: discussion,
+            live_due: None,
+            discussion_node: None,
+            worktree,
+            branch,
+            session,
+            id: id.into(),
+            checkpoint,
+            repo,
+            timeout,
+            deadline: Instant::now() + timeout,
+            remaining: timeout,
+            finished: discussion,
+            closed: false,
+            settled: false,
+            control: None,
+            corrections: Vec::new(),
+            pending_echoes: VecDeque::new(),
+        };
+        if discussion {
+            app.run.status = RunStatus::Idle;
+        } else {
+            let task = app.tasks.iter_mut().find(|t| t.id == id).unwrap();
+            let order = task.plan.as_ref().context("计划缺失")?.order()?;
+            let first = order
+                .iter()
+                .position(|&i| task.nodes[i].execution != Execution::Implemented)
+                .context("没有可执行节点")?;
+            ensure!(
+                order[first + 1..].iter().all(|&i| task.nodes[i]
+                    .attempts
+                    .iter()
+                    .all(|a| a.changed_files == Some(0))),
+                "后续节点已有改动，请先删除撤回后续节点"
+            );
+            for &i in &order[first..] {
+                task.nodes[i].execution = Execution::Planned;
+            }
+            let base = run.repo.resolve_snapshot(
+                task.checkpoint
+                    .as_deref()
+                    .or(task.baseline.as_deref())
+                    .context("任务基线缺失")?,
+            )?;
+            let actual = run.repo.capture_worktree_from(&base)?;
+            task.checkpoint = Some(actual.commit.clone());
+            run.checkpoint = Some(actual.commit);
+            store.save_task(task)?;
+            run.start_next(app, store)?;
+            if app
+                .selected_node()
+                .is_some_and(|n| n.execution == Execution::Running)
+            {
+                app.follow_live = true;
+            }
+        }
+        Ok(run)
     }
     #[allow(clippy::too_many_arguments)]
     fn start_internal(
@@ -96,6 +233,7 @@ impl CodingRun {
         store: &mut WorkspaceStore,
         app: &mut App,
         planning: bool,
+        hold_plan: bool,
     ) -> Result<Self> {
         ensure!(!prompt.trim().is_empty(), "任务不能为空");
         let source = Repository::open(project)?;
@@ -144,6 +282,7 @@ impl CodingRun {
         task.baseline = Some(baseline.commit);
         if planning {
             task.state = TaskState::Planning;
+            task.discussion_pending = true;
         }
         store.save_task(&task)?;
         app.tasks.push(task);
@@ -162,6 +301,7 @@ impl CodingRun {
             });
         }
         app.agent_connected = true;
+        app.planning_only = planning;
         app.task = Some(prompt.into());
         app.task_scroll = 0;
         app.queued_corrections = 0;
@@ -186,6 +326,9 @@ impl CodingRun {
             node_base: None,
             plan_output: String::new(),
             waiting: false,
+            hold_plan,
+            live_due: None,
+            discussion_node: None,
             worktree,
             branch,
             session,
@@ -204,7 +347,11 @@ impl CodingRun {
         };
         run.record("user", prompt, app, store)?;
         let message = if planning {
-            planning_prompt(prompt)
+            if hold_plan {
+                discussion_prompt(prompt)
+            } else {
+                planning_prompt(prompt)
+            }
         } else {
             prompt.into()
         };
@@ -229,7 +376,16 @@ impl CodingRun {
         if content.trim().is_empty() {
             return Ok(());
         }
-        store.append_message(&self.session, role, content)?;
+        let message_id = store.append_message(&self.session, role, content)?;
+        let node = match self.phase {
+            Phase::Node(i) => app
+                .tasks
+                .iter()
+                .find(|t| t.id == self.id)
+                .map(|t| t.nodes[i].contract.id.as_str()),
+            _ => self.discussion_node.as_deref(),
+        };
+        store.link_message(&self.id, node, message_id)?;
         let message = Message {
             session: self.session.clone(),
             role: role.into(),
@@ -258,6 +414,12 @@ impl CodingRun {
         app: &mut App,
         store: &mut WorkspaceStore,
     ) -> Result<()> {
+        if let RunControl::Say(message) = &control
+            && self.hold_plan
+            && matches!(self.phase, Phase::Planning)
+        {
+            return self.discuss(message, app, store);
+        }
         if let RunControl::Say(_) = &control {
             ensure!(app.task_selection.as_ref().is_none_or(|s| s.task_id == self.id &&
                 s.node_id.as_ref().is_none_or(|id| matches!(self.phase,Phase::Node(i) if app.tasks.iter().find(|t| t.id==self.id).is_some_and(|t| &t.nodes[i].contract.id==id)))),
@@ -338,6 +500,10 @@ impl CodingRun {
     }
 
     pub fn resume(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        ensure!(
+            !(self.hold_plan && matches!(self.phase, Phase::Planning)),
+            "计划需要在 1 界面按 s 确认启动，p 不授予写入"
+        );
         if self.waiting {
             ensure!(app.run.status == RunStatus::Paused, "节点边界尚未暂停");
             if let Phase::Node(index) = self.phase {
@@ -499,6 +665,12 @@ impl CodingRun {
                     if record["type"] == "extension_ui_request" {
                         self.client.dismiss_dialog(&record)?;
                     }
+                    if record["type"] == "tool_execution_end"
+                        && matches!(record["toolName"].as_str(), Some("write" | "edit"))
+                    {
+                        self.live_due
+                            .get_or_insert(Instant::now() + Duration::from_millis(700));
+                    }
                     if record["type"] == "message_end" {
                         let message = &record["message"];
                         if let Some(role @ ("user" | "assistant")) = message["role"].as_str() {
@@ -559,6 +731,16 @@ impl CodingRun {
                     break;
                 }
             }
+        }
+        if self.live_due.is_some_and(|t| Instant::now() >= t)
+            && matches!(self.phase, Phase::Node(_))
+            && app.run.status != RunStatus::Failed
+        {
+            self.live_due = None;
+            if let Err(error) = self.publish_preview(app, store) {
+                self.fail_workflow(error, app, store)?;
+            }
+            changed = true;
         }
         if let Some(control) = &mut self.control {
             if matches!(control.stage, ControlStage::Retry(when) if Instant::now() >= when) {
@@ -643,12 +825,15 @@ impl CodingRun {
         if let Some(task) = app.tasks.iter_mut().find(|t| t.id == self.id) {
             let previous_state = task.state;
             let mut dirty = task.checkpoint != self.checkpoint;
-            task.state =
-                if matches!(self.phase, Phase::Planning) && app.run.status == RunStatus::Running {
-                    TaskState::Planning
-                } else {
-                    TaskState::from_run(&format!("{:?}", app.run.status))
-                };
+            task.state = if self.hold_plan && matches!(self.phase, Phase::Planning) && self.finished
+            {
+                TaskState::Ready
+            } else if matches!(self.phase, Phase::Planning) && app.run.status == RunStatus::Running
+            {
+                TaskState::Planning
+            } else {
+                TaskState::from_run(&format!("{:?}", app.run.status))
+            };
             dirty |= previous_state != task.state;
             task.checkpoint = self.checkpoint.clone();
             if let Phase::Node(index) = self.phase {
@@ -701,12 +886,78 @@ impl CodingRun {
             return Ok(());
         }
         let result = (|| -> Result<()> {
-            let plan = TaskPlan::parse(&self.plan_output)?;
+            let discussion = if self.hold_plan {
+                Some(Discussion::parse(&self.plan_output)?)
+            } else {
+                None
+            };
+            let plan = if let Some(d) = &discussion {
+                d.plan.clone()
+            } else {
+                Some(TaskPlan::parse(&self.plan_output)?)
+            };
             self.client.shutdown()?;
             self.closed = true;
             app.agent_connected = false;
             let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
-            task.install_plan(plan)?;
+            task.discussion_pending = plan.is_none();
+            if let Some(plan) = plan {
+                if task.plan.is_some() {
+                    task.revise_plan(plan)?;
+                } else {
+                    task.install_plan(plan)?;
+                }
+            }
+            if self.hold_plan {
+                task.state = TaskState::Ready;
+                store.save_task(task)?;
+                self.finished = true;
+                app.run = Default::default();
+                app.planning_only = true;
+                store.finish_run(&self.id, "Ready", self.checkpoint.as_deref())?;
+                let summary = app
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == self.id)
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        format!(
+                            "{} · {}\n范围：{}\n边界：{}\n方案：{}",
+                            n.contract.id,
+                            n.contract.title,
+                            n.contract.scope.join("、"),
+                            n.contract.boundaries.join("；"),
+                            n.contract.implementation
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                self.record(
+                    "assistant",
+                    &format!(
+                        "{}\n\n{summary}\n\ni 继续讨论，s 确认启动（需有效计划）。",
+                        discussion.as_ref().unwrap().reply
+                    ),
+                    app,
+                    store,
+                )?;
+                app.status = if app
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == self.id)
+                    .unwrap()
+                    .discussion_pending
+                {
+                    "讨论待澄清 · i 继续讨论，尚不能启动"
+                } else {
+                    "计划待启动 · i 只读讨论 · s 确认实施"
+                }
+                .into();
+                app.tasks_revision = app.tasks_revision.wrapping_add(1);
+                return Ok(());
+            }
             store.save_task(task)?;
             self.client = PiClient::spawn_coder(
                 &self.executable,
@@ -727,12 +978,134 @@ impl CodingRun {
             }
             store.save_task(task)?;
             self.closed = false;
+            app.planning_only = false;
             app.agent_connected = true;
             self.start_next(app, store)
         })();
         if let Err(error) = result {
             self.fail_workflow(error, app, store)?;
         }
+        Ok(())
+    }
+    pub fn discuss(
+        &mut self,
+        message: &str,
+        app: &mut App,
+        store: &mut WorkspaceStore,
+    ) -> Result<()> {
+        ensure!(!message.trim().is_empty(), "讨论不能为空");
+        ensure!(self.finished, "请等本轮讨论/编码结束");
+        ensure!(
+            matches!(self.phase, Phase::Planning),
+            "编码会话不是只读讨论"
+        );
+        ensure!(
+            app.selected_task().is_some_and(|t| t.id == self.id),
+            "请选择本讨论任务"
+        );
+        self.discussion_node = app.task_selection.as_ref().and_then(|s| s.node_id.clone());
+        if self.closed {
+            self.client = PiClient::spawn_planner(
+                &self.executable,
+                &self.worktree,
+                &store.directory().join("sessions"),
+                self.model.as_deref(),
+            )?;
+            let state = self.client.get_state(Duration::from_secs(20))?;
+            self.session = state["sessionId"]
+                .as_str()
+                .context("讨论会话 ID 缺失")?
+                .into();
+            store.set_session(&self.id, &self.session)?;
+            app.tasks
+                .iter_mut()
+                .find(|t| t.id == self.id)
+                .unwrap()
+                .sessions
+                .push(self.session.clone());
+            self.closed = false;
+            app.agent_connected = true;
+        }
+        self.record("user", message, app, store)?;
+        let task = app.tasks.iter_mut().find(|t| t.id == self.id).unwrap();
+        task.discussion_pending = true;
+        store.save_task(task)?;
+        let task = app.tasks.iter().find(|t| t.id == self.id).unwrap();
+        let context = format!(
+            "原始需求：{}\n已有计划：{}\n本次选中节点：{}\n人类讨论/修订意见：{}\n请据此给出完整更新计划，保留无关节点与真实约束，不编码。",
+            task.prompt,
+            serde_json::to_string(&task.plan)?,
+            self.discussion_node.as_deref().unwrap_or("任务整体"),
+            message
+        );
+        self.plan_output.clear();
+        self.finished = false;
+        self.settled = false;
+        self.deadline = Instant::now() + self.timeout;
+        app.run = Default::default();
+        app.run.status = RunStatus::Running;
+        app.planning_only = true;
+        let history = task
+            .history
+            .iter()
+            .rev()
+            .take(12)
+            .rev()
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    m.role,
+                    m.content.chars().take(8000).collect::<String>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = discussion_prompt(&format!("{context}\n前序讨论记录：{history}"));
+        self.pending_echoes.push_back(prompt.clone());
+        self.send_prompt(&prompt, app)?;
+        app.status = "只读讨论规划中 · 未授予编码写入".into();
+        store.finish_run(&self.id, "Running", self.checkpoint.as_deref())?;
+        Ok(())
+    }
+    fn publish_preview(&mut self, app: &mut App, store: &mut WorkspaceStore) -> Result<()> {
+        let Phase::Node(index) = self.phase else {
+            return Ok(());
+        };
+        let base = app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
+            .attempts
+            .iter()
+            .find(|a| a.execution != Execution::NoChanges)
+            .context("节点基线缺失")?
+            .base
+            .clone();
+        let snapshot = self
+            .repo
+            .capture_worktree_from(&self.repo.resolve_snapshot(&base)?)?;
+        let changes = self.repo.snapshot_changes(&snapshot)?;
+        let node = &app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index];
+        let violations: Vec<_> = changes
+            .iter()
+            .filter(|c| !node.contract.contains_path(&c.path))
+            .map(|c| c.path.clone())
+            .collect();
+        app.tasks
+            .iter_mut()
+            .find(|t| t.id == self.id)
+            .unwrap()
+            .nodes[index]
+            .attempts
+            .last_mut()
+            .unwrap()
+            .previews
+            .push(snapshot.commit.clone());
+        app.publish_following_snapshot(&self.repo, &snapshot, &self.id, index)?;
+        store.save_task(app.tasks.iter().find(|t| t.id == self.id).unwrap())?;
+        app.tasks_revision = app.tasks_revision.wrapping_add(1);
+        ensure!(
+            violations.is_empty(),
+            "运行预览发现仓内越界：{}，已停止后续",
+            violations.join("、")
+        );
         Ok(())
     }
     fn begin_node(
@@ -767,7 +1140,19 @@ impl CodingRun {
         task.state = TaskState::Running;
         store.save_task(task)?;
         self.node_base = Some(base);
+        self.live_due = None;
+        app.planning_only = false;
         self.phase = Phase::Node(index);
+        if app.review_version.is_none()
+            && app.selected_node().is_some_and(|n| {
+                n.contract.id
+                    == app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
+                        .contract
+                        .id
+            })
+        {
+            app.follow_live = true;
+        }
         self.finished = false;
         self.waiting = false;
         self.settled = false;
@@ -826,7 +1211,8 @@ impl CodingRun {
         // can be reworked so downstream node changes cannot leak into this diff.
         let review_base = app.tasks.iter().find(|t| t.id == self.id).unwrap().nodes[index]
             .attempts
-            .first()
+            .iter()
+            .find(|a| a.execution != Execution::NoChanges)
             .context("节点开始版本缺失")?
             .base
             .clone();
@@ -859,7 +1245,8 @@ impl CodingRun {
             task.checkpoint = Some(snapshot.commit.clone());
             self.checkpoint = Some(snapshot.commit.clone());
             store.save_task(task)?;
-            app.append_node_checkpoint(&self.repo, &snapshot, &self.id, index)?;
+            app.publish_following_snapshot(&self.repo, &snapshot, &self.id, index)?;
+            self.live_due = None;
             if !violations.is_empty() {
                 anyhow::bail!(
                     "节点发生仓内范围越界：{}；后续节点未启动",

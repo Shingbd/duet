@@ -91,6 +91,79 @@ fn pi_label_describes_current_host_session_not_external_pi_availability() {
     assert!(!rendered.contains("Pi未连接"));
 }
 
+#[test]
+fn start_delete_follow_shortcuts_are_configurable_contextual_and_confirmed() {
+    use duet_workbench::{
+        app::{TaskSelection, View},
+        nodes::{NodeContract, TaskPlan, TaskRecord},
+    };
+    let mut app = App::empty(Keymap::default());
+    app.tasks
+        .push(TaskRecord::legacy("saved", "goal", "session"));
+    app.tasks[0]
+        .install_plan(TaskPlan {
+            schema_version: 1,
+            objective: "goal".into(),
+            constraints: vec![],
+            acceptance: vec!["review".into()],
+            nodes: vec![NodeContract {
+                id: "n".into(),
+                title: "node".into(),
+                objective: "goal".into(),
+                scope: vec!["src".into()],
+                boundaries: vec!["own source only".into()],
+                implementation: "write".into(),
+                constraints: vec![],
+                dependencies: vec![],
+                acceptance: vec!["inspect".into()],
+            }],
+        })
+        .unwrap();
+    app.select_task_entry(TaskSelection {
+        task_id: "saved".into(),
+        node_id: None,
+    });
+    app.view = View::Tasks;
+    app.tasks[0].discussion_pending = true;
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert_eq!(app.mode, Mode::Browse);
+    app.tasks[0].discussion_pending = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::ConfirmStart { .. }));
+    assert!(app.requested_start.is_none());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.requested_start.is_some());
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.requested_delete.is_none() && app.tasks.len() == 1);
+    app.view = View::Project;
+    app.act(Action::StartTask);
+    assert_eq!(app.mode, Mode::Browse);
+    app.mode = Mode::Message {
+        text: String::new(),
+    };
+    for c in ['s', 'd', 'v'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert_eq!(app.mode, Mode::Message { text: "sdv".into() });
+    let keys = Keymap::from_overrides(BTreeMap::from([(
+        "start_task".into(),
+        vec!["ctrl+s".into()],
+    )]))
+    .unwrap();
+    assert_eq!(
+        keys.resolve(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        Some(Action::StartTask)
+    );
+    assert!(
+        keys.resolve(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
+            .is_none()
+    );
+}
+
 fn item() -> ReadingItem {
     ReadingItem {
         title: "test.rs".into(),

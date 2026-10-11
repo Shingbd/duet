@@ -40,6 +40,13 @@ pub enum Mode {
         text: String,
     },
     ConfirmRead,
+    ConfirmStart {
+        task_id: String,
+        plan: String,
+    },
+    ConfirmDelete {
+        selection: TaskSelection,
+    },
     ConfirmCode {
         prompt: String,
     },
@@ -110,6 +117,10 @@ pub struct App {
     pub task_selection: Option<TaskSelection>,
     pub review_version: Option<String>,
     pub requested_task: Option<String>,
+    pub requested_start: Option<(String, String)>,
+    pub requested_delete: Option<TaskSelection>,
+    pub planning_only: bool,
+    pub follow_live: bool,
     pub keymap: Keymap,
     pub quit: bool,
     pub notes: Vec<String>,
@@ -117,7 +128,8 @@ pub struct App {
 
 fn task_state_label(s: TaskState) -> &'static str {
     match s {
-        TaskState::Planning => "拆分中",
+        TaskState::Planning => "讨论规划中",
+        TaskState::Ready => "计划待启动",
         TaskState::Running => "运行中",
         TaskState::Paused => "已暂停",
         TaskState::Implemented => "实现结束",
@@ -186,6 +198,10 @@ impl App {
             task_selection: None,
             review_version: None,
             requested_task: None,
+            requested_start: None,
+            requested_delete: None,
+            planning_only: true,
+            follow_live: true,
             keymap,
             quit: false,
             notes: Vec::new(),
@@ -327,6 +343,47 @@ impl App {
         Ok(())
     }
 
+    /// Live follow swaps only immutable snapshots of the explicitly selected node.
+    pub fn publish_following_snapshot(
+        &mut self,
+        repo: &Repository,
+        snapshot: &Snapshot,
+        task_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let follows = self.view == View::Review
+            && self.follow_live
+            && self.task_selection.as_ref().is_some_and(|s| {
+                s.task_id == task_id
+                    && s.node_id.as_deref()
+                        == Some(
+                            self.tasks.iter().find(|t| t.id == task_id).unwrap().nodes[index]
+                                .contract
+                                .id
+                                .as_str(),
+                        )
+            });
+        let position = self
+            .current()
+            .map(|i| (i.title.clone(), i.scroll, i.evidence_scroll));
+        self.append_node_checkpoint(repo, snapshot, task_id, index)?;
+        if follows {
+            self.review_version = Some(snapshot.commit.clone());
+            let indices = self.changed_indices();
+            if let Some(i) = position
+                .as_ref()
+                .and_then(|(p, _, _)| indices.iter().find(|&&i| self.items[i].title == *p))
+                .or_else(|| indices.first())
+            {
+                self.selected = *i;
+                if let Some((_, scroll, evidence)) = position {
+                    self.items[*i].scroll = scroll;
+                    self.items[*i].evidence_scroll = evidence;
+                }
+            }
+        }
+        Ok(())
+    }
     /// Current host RPC session, never external Pi availability or selected history.
     pub fn pi_session_label(&self) -> &'static str {
         match (&self.run.status, self.agent_connected) {
@@ -362,7 +419,7 @@ impl App {
             return Some(version);
         }
         if let Some(node) = self.selected_node() {
-            return node.published_checkpoint();
+            return node.review_snapshot();
         }
         self.selected_task()
             .and_then(|t| t.checkpoint.as_deref())
@@ -374,7 +431,12 @@ impl App {
             let nodes: Vec<_> = task
                 .nodes
                 .iter()
-                .filter(|n| !review_only || n.published_checkpoint().is_some())
+                .filter(|n| {
+                    !review_only
+                        || n.published_checkpoint().is_some()
+                        || n.preview_checkpoint().is_some()
+                        || matches!(n.execution, Execution::Running | Execution::Paused)
+                })
                 .collect();
             if review_only && nodes.is_empty() && (task.plan.is_some() || task.checkpoint.is_none())
             {
@@ -388,7 +450,11 @@ impl App {
                 format!(
                     "{} · {}",
                     task.prompt.lines().next().unwrap_or("任务"),
-                    task_state_label(task.state)
+                    if task.discussion_pending {
+                        "讨论待补充"
+                    } else {
+                        task_state_label(task.state)
+                    }
                 ),
             ));
             for node in nodes {
@@ -419,8 +485,11 @@ impl App {
     }
     pub fn select_task_entry(&mut self, selection: TaskSelection) {
         self.task_selection = Some(selection);
+        self.follow_live = self
+            .selected_node()
+            .is_some_and(|n| matches!(n.execution, Execution::Running | Execution::Paused));
         self.review_version = if let Some(node) = self.selected_node() {
-            node.published_checkpoint().map(str::to_owned)
+            node.review_snapshot().map(str::to_owned)
         } else {
             self.selected_task().and_then(|t| t.checkpoint.clone())
         };
@@ -495,16 +564,16 @@ impl App {
                 .last()
                 .map(|a| a.base.as_str())
                 .unwrap_or("尚未执行"),
-            node.checkpoint().unwrap_or("尚未生成")
+            node.review_snapshot().unwrap_or("尚未生成")
         ))
     }
     pub fn node_evidence(&self) -> Option<String> {
         let node = self.selected_node()?;
         let version = self.review_checkpoint();
-        let attempt = node
-            .attempts
-            .iter()
-            .find(|a| a.checkpoint.as_deref() == version);
+        let attempt = node.attempts.iter().find(|a| {
+            a.checkpoint.as_deref() == version
+                || version.is_some_and(|v| a.previews.iter().any(|p| p == v))
+        });
         Some(format!(
             "验收：{} · 人工审核：{}\n{}\n测试 Runner 未接入{}\n{}",
             verification_label(attempt.map_or(node.verification, |a| a.verification)),
@@ -631,16 +700,31 @@ impl App {
             .as_ref()
             .is_none_or(|s| s.node_id.is_none())
             && let Some(task) = self.selected_task()
-            && let Some(node) = task.nodes.iter().find(|n| n.pending_review()).or_else(|| {
-                task.nodes
-                    .iter()
-                    .find(|n| n.published_checkpoint().is_some())
-            })
+            && let Some(node) = task
+                .nodes
+                .iter()
+                .find(|n| matches!(n.execution, Execution::Running | Execution::Paused))
+                .or_else(|| task.nodes.iter().find(|n| n.pending_review()))
+                .or_else(|| {
+                    task.nodes
+                        .iter()
+                        .find(|n| n.published_checkpoint().is_some())
+                })
         {
             self.select_task_entry(TaskSelection {
                 task_id: task.id.clone(),
                 node_id: Some(node.contract.id.clone()),
             });
+        }
+        if self.follow_live
+            && self
+                .selected_node()
+                .is_some_and(|n| matches!(n.execution, Execution::Running | Execution::Paused))
+        {
+            self.review_version = self
+                .selected_node()
+                .and_then(|n| n.review_snapshot())
+                .map(str::to_owned);
         }
         self.view = View::Review;
         if let Some(index) = self.changed_indices().first() {
@@ -726,6 +810,24 @@ impl App {
             }
             Mode::Help => {
                 if key.code == KeyCode::Esc || self.keymap.resolve(key) == Some(Action::Help) {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::ConfirmStart { task_id, plan } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_start = Some((task_id.clone(), plan.clone()));
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::ConfirmDelete { selection } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_delete = Some(selection.clone());
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
                 }
                 return;
@@ -903,8 +1005,52 @@ impl App {
                     self.mode = Mode::ConfirmRead;
                 }
             }
+            Action::StartTask if self.view == View::Tasks => {
+                if let Some(task) = self.selected_task() {
+                    match task.startable() {
+                        Ok(()) => {
+                            self.mode = Mode::ConfirmStart {
+                                task_id: task.id.clone(),
+                                plan: serde_json::to_string(&task.plan).unwrap(),
+                            }
+                        }
+                        Err(e) => self.status = format!("不能启动：{e}"),
+                    }
+                } else {
+                    self.status = "请先 i 输入需求，讨论出任务计划".into();
+                }
+            }
+            Action::StartTask => self.status = "请按 1 选择任务，再 s 启动".into(),
+            Action::DeleteSelected if matches!(self.view, View::Tasks | View::Review) => {
+                if let Some(selection) = self.task_selection.clone() {
+                    self.mode = Mode::ConfirmDelete { selection };
+                }
+            }
+            Action::DeleteSelected => self.status = "请在任务/审核界面选择节点或任务".into(),
+            Action::FollowLive if self.view == View::Review => {
+                self.follow_live = !self.follow_live;
+                if self.follow_live {
+                    self.review_version = self
+                        .selected_node()
+                        .and_then(|n| n.review_snapshot())
+                        .map(str::to_owned);
+                }
+                self.status = if self.follow_live {
+                    "跟随当前节点的固定预览"
+                } else {
+                    "固定当前版本，不跟随新快照"
+                }
+                .into();
+                if let Some(i) = self.changed_indices().first() {
+                    self.selected = *i;
+                }
+            }
+            Action::FollowLive => self.status = "请在审核界面切换跟随".into(),
             Action::Pause => self.controls.push(RunControl::TogglePause),
             Action::Reply => {
+                if !self.agent_connected {
+                    self.planning_only = true;
+                }
                 self.view = View::Tasks;
                 self.panel = Panel::Reader;
                 self.mode = Mode::Message {
@@ -947,13 +1093,16 @@ impl App {
             "knowledge" => self.view = View::Knowledge,
             "read" => self.act(Action::MarkRead),
             "approve-node" => self.request_node_approval(),
+            "start-task" => self.act(Action::StartTask),
+            "delete-selected" => self.act(Action::DeleteSelected),
+            "follow-live" => self.act(Action::FollowLive),
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,
             value if value.starts_with("say ") && !value[4..].trim().is_empty() => self
                 .controls
                 .push(RunControl::Say(value[4..].trim().into())),
-            value if value.starts_with("code ") => {
+            value if value.starts_with("code ") || value.starts_with("plan ") => {
                 if matches!(
                     self.run.status,
                     RunStatus::Running

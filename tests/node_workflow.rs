@@ -42,7 +42,7 @@ fn setup(count: usize, mode: &str) -> (tempfile::TempDir, std::path::PathBuf, Wo
     let fake = dir.path().join(".duet-fake-pi");
     let script = format!(
         r#"#!/usr/bin/env python3
-import json,os,pathlib,sys
+import json,os,pathlib,sys,time
 count={count}
 mode={mode:?}
 code_turn=0
@@ -57,11 +57,17 @@ for line in sys.stdin:
   if planner:
    nodes=[{{'id':'n'+str(i),'title':'node '+str(i),'objective':'implement '+str(i),'scope':['file'+str(i)+'.txt'],'boundaries':['only implement this node; preserve other behavior'],'implementation':'write the requested file','constraints':['no tests or merge'],'dependencies':[] if i==1 else ['n'+str(i-1)],'acceptance':['file content is correct']}} for i in range(1,count+1)]
    output=json.dumps({{'schema_version':1,'objective':'goal','constraints':['keep baseline'],'acceptance':['all files correct'],'nodes':nodes}}) if mode!='invalid' else 'not json'
+   if mode=='clarify' and 'Rust' not in r['message']: output=json.dumps({{'reply':'请明确语言和架构边界。','plan':None}})
   else:
    node=json.loads(r['message'].split('\n当前节点契约：')[1].split('\n明确补充意见：')[0])
    code_turn+=1
    if mode!='nochange' and (mode!='nochange_once' or code_turn>1): pathlib.Path(node['scope'][0]).write_text(node['id']+'\n')
    if mode=='violate': pathlib.Path('outside.txt').write_text('outside')
+   if mode=='live':
+    pathlib.Path(node['scope'][0]).write_text(node['id']+' first')
+    emit({{'type':'tool_execution_end','toolName':'write'}});time.sleep(1.15)
+    pathlib.Path(node['scope'][0]).write_text(node['id']+' second')
+    emit({{'type':'tool_execution_end','toolName':'edit'}});time.sleep(1.15)
    output='implemented '+node['id']+'; tests not run'
   emit({{'type':'message_end','message':{{'role':'assistant','content':[{{'type':'text','text':output}}]}}}})
   emit({{'type':'agent_settled','aborted':False}})
@@ -523,6 +529,312 @@ fn schema_four_repairs_legacy_false_completion_using_immutable_checkpoint() {
     assert_eq!(task.nodes[0].checkpoint(), Some(cp.as_str()));
     assert_eq!(task.nodes[0].review, Review::Pending);
     assert_eq!(task.nodes[1].execution, Execution::Planned);
+}
+
+#[test]
+fn discussion_is_readonly_supports_questions_and_saved_plan_explicit_start() {
+    use duet_workbench::{app::Mode, keymap::Action};
+    let (dir, fake, mut store, mut app) = setup(2, "clarify");
+    let mut run = CodingRun::start_drafting(
+        dir.path(),
+        &fake,
+        None,
+        "discuss a feature",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert!(app.tasks[0].plan.is_none());
+    assert!(app.history.iter().any(|m| m.content.contains("明确语言")));
+    assert!(!run.worktree.join("file1.txt").exists());
+    assert!(run.resume(&mut app, &mut store).is_err());
+    run.discuss(
+        "用 Rust，实现这两个文件，边界严格按 scope",
+        &mut app,
+        &mut store,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    assert_eq!(app.tasks[0].state, TaskState::Ready);
+    assert!(
+        app.tasks[0]
+            .nodes
+            .iter()
+            .all(|n| n.execution == Execution::Planned)
+    );
+    app.act(Action::StartTask);
+    assert!(matches!(app.mode, Mode::ConfirmStart { .. }));
+    let id = run.id.clone();
+    run.stop(&mut app, &mut store).unwrap();
+    store.save(&app).unwrap();
+    drop(run);
+    drop(store);
+    let mut store = WorkspaceStore::open(dir.path()).unwrap();
+    store.restore(&mut app).unwrap();
+    assert_eq!(app.tasks[0].state, TaskState::Ready);
+    assert!(!app.agent_connected);
+    let mut code = CodingRun::open_existing(
+        &id,
+        &fake,
+        None,
+        false,
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut code, &mut app, &mut store);
+    assert_eq!(code.id, id);
+    assert_eq!(app.tasks.len(), 1);
+    assert!(
+        app.tasks[0]
+            .nodes
+            .iter()
+            .all(|n| n.execution == Execution::Implemented)
+    );
+    assert!(!dir.path().join("file1.txt").exists());
+}
+
+#[test]
+fn running_diff_uses_immutable_previews_and_explicit_pin_preserves_position() {
+    use duet_workbench::keymap::Action;
+    let (dir, fake, mut store, mut app) = setup(1, "live");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while app.tasks[0].nodes.is_empty() {
+        assert!(Instant::now() < deadline);
+        run.poll(&mut app, &mut store).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.act(Action::Review);
+    while app.tasks[0].nodes[0].preview_checkpoint().is_none() {
+        assert!(Instant::now() < deadline);
+        run.poll(&mut app, &mut store).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.tasks[0].nodes[0].execution, Execution::Running);
+    assert!(app.body().contains("+n1 first"));
+    let first = app.review_checkpoint().unwrap().to_owned();
+    app.items[app.selected].scroll = 3;
+    app.act(Action::ApproveNode);
+    assert_eq!(app.mode, duet_workbench::app::Mode::Browse);
+    app.act(Action::FollowLive);
+    assert!(!app.follow_live);
+    poll(&mut run, &mut app, &mut store);
+    assert_eq!(app.review_checkpoint(), Some(first.as_str()));
+    assert!(app.body().contains("+n1 first"));
+    assert!(!app.body().contains("+n1 second"));
+    assert_eq!(app.items[app.selected].scroll, 3);
+    assert!(app.tasks[0].nodes[0].attempts[0].previews.len() >= 2);
+    app.act(Action::FollowLive);
+    assert!(app.body().contains("+n1 second"));
+    assert_eq!(app.review_checkpoint(), app.tasks[0].nodes[0].checkpoint());
+    assert!(
+        Repository::open(&run.worktree)
+            .unwrap()
+            .diff_file(
+                &Repository::open(&run.worktree)
+                    .unwrap()
+                    .resolve_snapshot(&first)
+                    .unwrap(),
+                "file1.txt"
+            )
+            .unwrap()
+            .contains("n1 first")
+    );
+    run.stop(&mut app, &mut store).unwrap();
+    store.save(&app).unwrap();
+    drop(run);
+    drop(store);
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    store.restore(&mut app).unwrap();
+    assert!(app.body().contains("+n1 second"));
+}
+
+#[test]
+fn delete_node_cascades_downstream_reverts_changes_and_removes_owned_discussion() {
+    use duet_workbench::app::TaskSelection;
+    let (dir, fake, mut store, mut app) = setup(3, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    let cp = app.tasks[0].nodes[0].checkpoint().unwrap().to_owned();
+    app.tasks[0].nodes[0].approve(&cp).unwrap();
+    run.resume(&mut app, &mut store).unwrap();
+    poll(&mut run, &mut app, &mut store);
+    run.stop(&mut app, &mut store).unwrap();
+    let candidate = run.worktree.clone();
+    let id = run.id.clone();
+    drop(run);
+    fs::write(candidate.join(".duet-fake-pi"), "ignored generated file").unwrap();
+    duet_workbench::task_ops::delete_selection(
+        &TaskSelection {
+            task_id: id,
+            node_id: Some("n2".into()),
+        },
+        &mut app,
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(app.tasks[0].nodes.len(), 1);
+    assert_eq!(
+        fs::read_to_string(candidate.join("file1.txt")).unwrap(),
+        "n1\n"
+    );
+    assert!(!candidate.join("file2.txt").exists() && !candidate.join("file3.txt").exists());
+    assert!(!candidate.join(".duet-fake-pi").exists());
+    assert!(
+        app.tasks[0]
+            .history
+            .iter()
+            .any(|m| m.content.contains("implemented n1"))
+    );
+    assert!(
+        !app.tasks[0]
+            .history
+            .iter()
+            .any(|m| m.content.contains("implemented n2") || m.content.contains("implemented n3"))
+    );
+    assert_eq!(app.tasks[0].nodes[0].review, Review::Approved);
+    assert_eq!(
+        Repository::open(dir.path())
+            .unwrap()
+            .read(
+                &Repository::open(dir.path())
+                    .unwrap()
+                    .resolve_snapshot(&cp)
+                    .unwrap(),
+                "file1.txt"
+            )
+            .unwrap(),
+        "n1\n"
+    );
+    assert!(
+        dir.path()
+            .join(".duet/backups")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some()
+    );
+}
+
+#[test]
+fn delete_task_preserves_other_task_and_main_dirty_files_and_index() {
+    use duet_workbench::app::TaskSelection;
+    let (dir, fake, mut store, mut app) = setup(1, "normal");
+    let mut run = CodingRun::start_planning(
+        dir.path(),
+        &fake,
+        None,
+        "implement files",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    run.stop(&mut app, &mut store).unwrap();
+    let id = run.id.clone();
+    let candidate = run.worktree.clone();
+    drop(run);
+    fs::write(dir.path().join("base.txt"), "manual uncommitted source").unwrap();
+    let index = fs::read(dir.path().join(".git/index")).unwrap();
+    let mut other = CodingRun::start_drafting(
+        dir.path(),
+        &fake,
+        None,
+        "other plan",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut other, &mut app, &mut store);
+    other.stop(&mut app, &mut store).unwrap();
+    let other_id = other.id.clone();
+    let other_candidate = other.worktree.clone();
+    drop(other);
+    duet_workbench::task_ops::delete_selection(
+        &TaskSelection {
+            task_id: id,
+            node_id: None,
+        },
+        &mut app,
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.tasks[0].id, other_id);
+    assert_eq!(app.tasks[0].state, TaskState::Ready);
+    assert!(!candidate.exists() && other_candidate.exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("base.txt")).unwrap(),
+        "manual uncommitted source"
+    );
+    assert_eq!(fs::read(dir.path().join(".git/index")).unwrap(), index);
+}
+
+#[test]
+fn deletion_refuses_tampered_candidate_that_points_to_main_project() {
+    use duet_workbench::app::TaskSelection;
+    let (dir, fake, mut store, mut app) = setup(1, "normal");
+    let mut run = CodingRun::start_drafting(
+        dir.path(),
+        &fake,
+        None,
+        "plan",
+        Duration::from_secs(15),
+        &mut store,
+        &mut app,
+    )
+    .unwrap();
+    poll(&mut run, &mut app, &mut store);
+    run.stop(&mut app, &mut store).unwrap();
+    let id = run.id.clone();
+    drop(run);
+    let db = rusqlite::Connection::open(dir.path().join(".duet/workspace.db")).unwrap();
+    db.execute(
+        "UPDATE runs SET worktree=?1 WHERE id=?2",
+        rusqlite::params![dir.path().to_str().unwrap(), id],
+    )
+    .unwrap();
+    drop(db);
+    assert!(
+        duet_workbench::task_ops::delete_selection(
+            &TaskSelection {
+                task_id: id,
+                node_id: None
+            },
+            &mut app,
+            &mut store
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("base.txt")).unwrap(),
+        "baseline\n"
+    );
+    assert_eq!(app.tasks.len(), 1);
 }
 
 use duet_workbench::nodes::TaskState;
