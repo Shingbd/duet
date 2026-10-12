@@ -4,6 +4,7 @@ pub mod coding;
 pub mod conflict;
 pub mod conflict_ai;
 pub mod keymap;
+pub mod markdown;
 pub mod merge;
 pub mod nodes;
 pub mod rpc;

@@ -1120,3 +1120,136 @@ fn quota_failure_is_persisted_and_confirmed_retry_reuses_task_after_restart() {
     );
     retry.stop(&mut app, &mut store).unwrap();
 }
+
+// Pure display fixtures: no setup(), fake RPC, Git process or model required.
+mod display_regression {
+    use duet_workbench::{
+        app::{App, Panel, TaskSelection, View},
+        keymap::Keymap,
+        nodes::{Execution, NodeContract, NodeRecord, Review, TaskPlan, TaskRecord, Verification},
+        ui,
+    };
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn contract_fields_markdown_wrapping_and_unverified_styles_in_both_themes() {
+        let contract = NodeContract {
+            id: "node_literal".into(),
+            title: "**ξ契约标题**".into(),
+            objective: format!("Ω普通正文 **{}**", "中文👩‍💻e\u{301}long ".repeat(12)),
+            scope: vec!["src/[literal]_file.rs".into()],
+            boundaries: vec!["# λ边界\n\n不可 **越界**".into()],
+            implementation: "## 方法\n\n> 说明\n\n- 第一步\n- 第二步".into(),
+            constraints: vec!["节点 **约束**".into()],
+            dependencies: vec!["dep_literal".into()],
+            acceptance: vec!["- [x] document only".into(), "第二条验收".into()],
+        };
+        let mut task = TaskRecord::legacy("task_literal", "需求", "session");
+        task.plan = Some(TaskPlan {
+            schema_version: 1,
+            objective: "目标".into(),
+            constraints: vec!["任务 **约束**".into()],
+            acceptance: vec!["总体条件".into()],
+            nodes: vec![contract.clone()],
+        });
+        let mut node = NodeRecord::new(contract);
+        node.begin("base_[literal]");
+        node.execution = Execution::Implemented;
+        node.attempts[0].checkpoint = Some("completion_*literal*".into());
+        task.nodes.push(node);
+        let mut app = App::empty(Keymap::default());
+        app.tasks.push(task);
+        app.view = View::Tasks;
+        app.select_task_entry(TaskSelection {
+            task_id: "task_literal".into(),
+            node_id: Some("node_literal".into()),
+        });
+        app.fullscreen = true;
+        app.panel = Panel::Reader;
+        for light in [false, true] {
+            app.light = light;
+            for (width, height) in [(40, 20), (100, 36)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut output = String::new();
+                let (mut title, mut body, mut warning, mut pending, mut field) =
+                    (None, None, None, None, None);
+                for scroll in 0..180 {
+                    app.task_scroll = scroll;
+                    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    for y in 5..height - 3 {
+                        let mut row = String::new();
+                        let mut x = 1;
+                        while x < width - 1 {
+                            let symbol = buffer[(x, y)].symbol();
+                            row.push_str(symbol);
+                            x += symbol.width().max(1) as u16;
+                        }
+                        output.push_str(&row);
+                        output.push('\n');
+                        for x in 1..width - 1 {
+                            let cell = &buffer[(x, y)];
+                            match cell.symbol() {
+                                "ξ" => title = Some(cell.clone()),
+                                "Ω" => body = Some(cell.clone()),
+                                "λ" => warning = Some(cell.clone()),
+                                "节" if row.contains("节点 ID") => field = Some(cell.clone()),
+                                "未" if row.contains("验收状态") => {
+                                    pending = Some(cell.clone())
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                for field in [
+                    "节点 ID",
+                    "任务 ID",
+                    "执行状态",
+                    "验收状态",
+                    "人工审核",
+                    "文件范围",
+                    "边界条件",
+                    "实现方法",
+                    "任务约束",
+                    "节点约束",
+                    "依赖",
+                    "第二条验收",
+                    "开始版本",
+                    "完成版本",
+                    "src/[literal]_file.rs",
+                    "completion_*literal*",
+                    "dep_literal",
+                    "□ 未验证",
+                    "[x] document only",
+                    "待审",
+                ] {
+                    assert!(output.contains(field), "missing {field} at {width} columns");
+                }
+                assert!(!output.contains("**ξ契约标题**"));
+                assert!(output.contains("👩‍💻"));
+                assert!(output.contains("e\u{301}"));
+                let (title, body, warning, pending) = (
+                    title.unwrap(),
+                    body.unwrap(),
+                    warning.unwrap(),
+                    pending.unwrap(),
+                );
+                assert_ne!(title.fg, body.fg);
+                assert_ne!(body.fg, warning.fg);
+                let field = field.unwrap();
+                assert_ne!(field.fg, body.fg);
+                assert!(field.modifier.contains(Modifier::BOLD));
+                assert!(title.modifier.contains(Modifier::BOLD));
+                assert!(
+                    pending
+                        .modifier
+                        .contains(Modifier::BOLD | Modifier::UNDERLINED)
+                );
+                assert_eq!(app.tasks[0].nodes[0].verification, Verification::Unverified);
+                assert_eq!(app.tasks[0].nodes[0].review, Review::Pending);
+            }
+        }
+    }
+}

@@ -1,7 +1,7 @@
 use crate::{
     checkpoint::{ChangeKind, Repository, Snapshot},
     keymap::{Action, Keymap},
-    nodes::{Execution, NodeRecord, Review, TaskRecord, TaskState, Verification},
+    nodes::{Execution, NodeContract, NodeRecord, Review, TaskRecord, TaskState, Verification},
     rpc::{RunState, RunStatus},
     storage::Message,
 };
@@ -78,6 +78,20 @@ pub enum Mode {
         node_id: String,
         checkpoint: String,
     },
+}
+
+/// Owned, domain-only snapshot for contract readers. No terminal styles or
+/// Markdown parsing; existing plain-text APIs remain available unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeContractContent {
+    pub task_id: String,
+    pub contract: NodeContract,
+    pub task_constraints: Vec<String>,
+    pub execution: Execution,
+    pub verification: Verification,
+    pub review: Review,
+    pub start_version: Option<String>,
+    pub completion_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -626,6 +640,32 @@ impl App {
             .map_or(0, |i| i.saturating_add_signed(delta).min(rows.len() - 1));
         self.select_task_entry(rows[index].0.clone());
     }
+    pub fn node_contract_content(&self) -> Option<NodeContractContent> {
+        let node = self.selected_node()?;
+        let task = self.selected_task()?;
+        Some(NodeContractContent {
+            task_id: task.id.clone(),
+            contract: node.contract.clone(),
+            task_constraints: task
+                .plan
+                .as_ref()
+                .map(|p| p.constraints.clone())
+                .unwrap_or_default(),
+            execution: node.execution,
+            verification: node.verification,
+            review: node.review,
+            start_version: node.attempts.last().map(|a| a.base.clone()),
+            completion_version: node.review_snapshot().map(str::to_owned),
+        })
+    }
+
+    /// Contract scrolling also works when a review node has no file item.
+    pub fn showing_node_contract(&self) -> bool {
+        self.selected_node().is_some()
+            && (self.view == View::Tasks
+                || (self.view == View::Review && self.page == Page::Intent))
+    }
+
     pub fn node_description(&self) -> Option<String> {
         let node = self.selected_node()?;
         let task = self.selected_task()?;
@@ -660,32 +700,51 @@ impl App {
         ))
     }
     pub fn node_evidence(&self) -> Option<String> {
+        Some(
+            self.node_evidence_blocks()?
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    /// Trusted status records are separate from authored evidence/acceptance.
+    /// `true` identifies literal application metadata, not markup instructions.
+    pub fn node_evidence_blocks(&self) -> Option<Vec<(String, bool)>> {
         let node = self.selected_node()?;
         let version = self.review_checkpoint();
         let attempt = node.attempts.iter().find(|a| {
             a.checkpoint.as_deref() == version
                 || version.is_some_and(|v| a.previews.iter().any(|p| p == v))
         });
-        Some(format!(
-            "验收：{} · 人工审核：{}\n{}\n测试 Runner 未接入{}\n{}",
-            verification_label(attempt.map_or(node.verification, |a| a.verification)),
-            review_label(attempt.map_or(node.review, |a| a.review)),
-            node.contract
-                .acceptance
-                .iter()
-                .map(|c| format!("□ 未验证 · {c}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            attempt
-                .filter(|a| !a.scope_violations.is_empty())
-                .map(|a| format!("\n仓内越界：{}", a.scope_violations.join("、")))
-                .unwrap_or_default(),
-            if self.explain {
-                attempt.map(|a| a.summary.as_str()).unwrap_or("")
-            } else {
-                ""
-            }
-        ))
+        let mut blocks = vec![
+            (
+                format!(
+                    "验收：{} · 人工审核：{}",
+                    verification_label(attempt.map_or(node.verification, |a| a.verification)),
+                    review_label(attempt.map_or(node.review, |a| a.review))
+                ),
+                true,
+            ),
+            (
+                "测试 Runner 未接入；文档复选框不代表真实验证或人工批准。".into(),
+                true,
+            ),
+        ];
+        if let Some(a) = attempt.filter(|a| !a.scope_violations.is_empty()) {
+            blocks.push((format!("仓内越界：{}", a.scope_violations.join("、")), true));
+        }
+        for (index, acceptance) in node.contract.acceptance.iter().enumerate() {
+            blocks.push((format!("□ 未验证 · 验收条件 {}", index + 1), true));
+            blocks.push((acceptance.clone(), false));
+        }
+        if self.explain
+            && let Some(a) = attempt
+        {
+            blocks.push((a.summary.clone(), false));
+        }
+        Some(blocks)
     }
     fn request_node_approval(&mut self) {
         let Some(selection) = self.task_selection.clone() else {
@@ -872,7 +931,7 @@ impl App {
                         self.mode = Mode::Browse;
                         if is_search {
                             self.filter = value;
-                            if self.view == View::Tasks {
+                            if self.view == View::Tasks || self.showing_node_contract() {
                                 self.task_scroll = 0;
                             }
                             if let Some(item) = self.items.get_mut(self.selected) {
@@ -1168,7 +1227,9 @@ impl App {
                     } else {
                         self.move_item(delta);
                     }
-                } else if self.view == View::Tasks {
+                } else if self.view == View::Tasks
+                    || (self.showing_node_contract() && self.panel == Panel::Reader)
+                {
                     let scroll = if self.panel == Panel::Reader {
                         &mut self.task_scroll
                     } else {
@@ -1209,6 +1270,7 @@ impl App {
                     Page::Code => Page::Evidence,
                     Page::Evidence => Page::Intent,
                 };
+                self.task_scroll = 0;
                 if let Some(item) = self.items.get_mut(self.selected) {
                     item.scroll = 0;
                 }
@@ -1379,19 +1441,20 @@ impl App {
     }
 
     /// Semantic role tags, not guesses based on message text.
-    pub fn task_lines(&self) -> Vec<(String, i8)> {
-        let mut lines = Vec::new();
+    /// Complete natural-language records; retain failure evidence before Markdown layout.
+    pub fn task_text_blocks(&self) -> Vec<(String, i8)> {
+        let mut blocks = Vec::new();
         if let Some(f) = self.selected_task().and_then(|t| t.failure.as_ref()) {
-            lines.push((format!("失败原因：{}", f.reason), -1));
-            lines.push((
+            blocks.push((format!("失败原因：{}", f.reason), -1));
+            blocks.push((
                 "r 重试原任务（需确认） · i 调整讨论；不会自动重试".into(),
                 2,
             ));
         }
-        lines.extend(self.task_lines_inner());
-        lines
+        blocks.extend(self.task_text_blocks_inner());
+        blocks
     }
-    fn task_lines_inner(&self) -> Vec<(String, i8)> {
+    fn task_text_blocks_inner(&self) -> Vec<(String, i8)> {
         if let Some(description) = self.node_description() {
             return description.lines().map(|l| (l.to_owned(), 2)).collect();
         }
@@ -1399,7 +1462,8 @@ impl App {
             && self.tasks.last().is_some_and(|live| live.id != selected.id)
         {
             let mut lines = vec![
-                (format!("任务：{}", selected.prompt), 2),
+                ("任务需求".into(), 2),
+                (selected.prompt.clone(), 0),
                 (format!("状态：{}", task_state_label(selected.state)), 2),
                 (String::new(), 0),
             ];
@@ -1413,7 +1477,7 @@ impl App {
                 } else if m.role == "assistant" {
                     ("AI", 4)
                 } else {
-                    ("系统", 2)
+                    ("系统", 5)
                 };
                 lines.push((
                     format!("┌─ {label}"),
@@ -1425,7 +1489,7 @@ impl App {
                         2
                     },
                 ));
-                lines.extend(m.content.lines().map(|l| (format!("│ {l}"), role)));
+                lines.push((m.content.clone(), role));
                 lines.push((String::new(), 0));
             }
             return lines;
@@ -1443,10 +1507,7 @@ impl App {
             RunStatus::Aborted => "已中断",
             RunStatus::Failed => "失败",
         };
-        let mut lines: Vec<_> = format!("任务：{task}")
-            .split('\n')
-            .map(|line| (line.to_owned(), 2))
-            .collect();
+        let mut lines = vec![("任务需求".into(), 2), (task.clone(), 0)];
         lines.extend(vec![
             (
                 format!(
@@ -1470,27 +1531,43 @@ impl App {
             let (label, role, header) = match message.role.as_str() {
                 "user" => ("你", 3, 7),
                 "assistant" => ("AI", 4, 8),
-                _ => ("系统", 2, 2),
+                _ => ("系统", 5, 2),
             };
             lines.push((format!("┌─ {label}"), header));
-            lines.extend(
-                message
-                    .content
-                    .split('\n')
-                    .map(|line| (format!("│ {line}"), role)),
-            );
+            lines.push((message.content.clone(), role));
             lines.push((String::new(), 0));
         }
         if self.run.streaming_text && !self.run.text.trim().is_empty() {
             lines.push(("┌─ AI · 正在回复".into(), 8));
-            lines.extend(
-                self.run
-                    .text
-                    .split('\n')
-                    .map(|line| (format!("│ {line}"), 4)),
-            );
+            lines.push((self.run.text.clone(), 4));
         }
         lines
+    }
+
+    /// Legacy plain-text consumers retain their line-oriented representation.
+    pub fn task_lines(&self) -> Vec<(String, i8)> {
+        self.task_text_blocks()
+            .into_iter()
+            .flat_map(|(text, role)| {
+                let legacy_role = if role == 5 || (role == 0 && text.starts_with("任务：")) {
+                    2
+                } else {
+                    role
+                };
+                text.split('\n')
+                    .map(|line| {
+                        (
+                            if matches!(role, 3..=5) {
+                                format!("│ {line}")
+                            } else {
+                                line.to_owned()
+                            },
+                            legacy_role,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub fn body(&self) -> String {

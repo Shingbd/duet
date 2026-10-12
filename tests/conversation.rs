@@ -112,6 +112,319 @@ fn restore_filters_legacy_empty_chat_and_paused_runs_never_auto_resume() {
     assert_eq!(store.history("s").unwrap().len(), 3); // Do not delete historical evidence.
 }
 
+// Display/input regressions are independent of the controlled RPC module below.
+mod display_regression {
+    use super::*;
+    use ratatui::{backend::Backend, style::Modifier};
+    use unicode_width::UnicodeWidthStr;
+
+    fn screen(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let mut row = String::new();
+                let mut x = 0;
+                while x < buffer.area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    row.push_str(symbol);
+                    x += symbol.width().max(1) as u16;
+                }
+                row
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn set_input(app: &mut App, kind: usize, text: &str) {
+        app.mode = match kind {
+            0 => Mode::Input {
+                search: false,
+                text: text.into(),
+            },
+            1 => Mode::Input {
+                search: true,
+                text: text.into(),
+            },
+            _ => Mode::Message { text: text.into() },
+        };
+    }
+
+    fn source(app: &App) -> &str {
+        match &app.mode {
+            Mode::Input { text, .. } | Mode::Message { text } => text,
+            _ => panic!("input unexpectedly closed"),
+        }
+    }
+
+    #[test]
+    fn all_input_surfaces_follow_unicode_tail_resize_and_keep_original_source() {
+        for light in [false, true] {
+            for kind in 0..3 {
+                let mut app = App::empty(Keymap::default());
+                app.light = light;
+                let text = format!("{}TAILZ", "中ASCII👩‍💻e\u{301}**_#`".repeat(400));
+                set_input(&mut app, kind, &text);
+                let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+                for (width, height) in [(100, 30), (24, 8), (40, 16), (100, 30)] {
+                    terminal.backend_mut().resize(width, height);
+                    terminal
+                        .resize(ratatui::layout::Rect::new(0, 0, width, height))
+                        .unwrap();
+                    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                    let popup_width = width.min(if kind == 2 { 76 } else { 72 });
+                    let inner_width = popup_width as usize - 2;
+                    let display = format!("{}{text}", if kind == 2 { "" } else { "> " });
+                    let mut rows = ui::wrap_cells(&display, inner_width);
+                    let last_width = rows.last().unwrap().width();
+                    let column = if last_width == inner_width {
+                        rows.push(String::new());
+                        0
+                    } else {
+                        last_width
+                    };
+                    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                    assert_eq!(cursor.x, (width - popup_width) / 2 + 1 + column as u16);
+                    assert!(cursor.y > 0 && cursor.y < height - 1);
+                    if column > 0 {
+                        assert_eq!(
+                            terminal.backend().buffer()[(cursor.x - 1, cursor.y)].symbol(),
+                            "Z"
+                        );
+                    }
+                    let output = screen(&terminal);
+                    assert!(output.contains("Enter"));
+                    assert!(output.contains("Esc"));
+                    if kind == 2 {
+                        let visible = output
+                            .chars()
+                            .filter(|c| !c.is_whitespace() && !"│╭╮╰╯─".contains(*c))
+                            .collect::<String>();
+                        assert!(
+                            visible.contains(if app.planning_only {
+                                "只读讨论"
+                            } else {
+                                "仍有编码权限"
+                            }),
+                            "{width}x{height}: {output}"
+                        );
+                    }
+                    assert_eq!(source(&app), text);
+                    // The tail window contains a preceding input row, not just
+                    // a clipped first line. At minimum height it can be one row.
+                    assert!(rows.len() > height as usize);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn second_input_row_is_visible_and_unicode_deletion_restores_cursor() {
+        for light in [false, true] {
+            for kind in 0..3 {
+                let mut app = App::empty(Keymap::default());
+                app.light = light;
+                let inner_width = if kind == 2 { 74 } else { 70 };
+                let prefix_width = if kind == 2 { 0 } else { 2 };
+                let input = format!("{}SECOND", "a".repeat(inner_width - prefix_width));
+                set_input(&mut app, kind, &input);
+                let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                let left = (100 - if kind == 2 { 76 } else { 72 }) / 2 + 1;
+                let buffer = terminal.backend().buffer();
+                assert_eq!(buffer[(left, cursor.y)].symbol(), "S");
+                assert_eq!(buffer[(left + 5, cursor.y)].symbol(), "D");
+                assert_eq!(
+                    buffer[(left + prefix_width as u16, cursor.y - 1)].symbol(),
+                    "a"
+                );
+                assert_eq!(cursor.x, left + 6);
+                // Keyboard events remain scalar input. Display must cluster the
+                // resulting CJK, ZWJ emoji and combining accent without changing it.
+                let suffix = "中👩‍💻e\u{301}";
+                for ch in suffix.chars() {
+                    app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                }
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                assert!(screen(&terminal).contains(suffix));
+                assert_eq!(source(&app), format!("{input}{suffix}"));
+                for _ in suffix.chars() {
+                    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+                }
+                terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+                assert_eq!(source(&app), input);
+                assert_eq!(
+                    terminal.backend_mut().get_cursor_position().unwrap(),
+                    cursor
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_fill_typing_and_backspace_cross_rows_in_all_three_inputs() {
+        for kind in 0..3 {
+            let mut app = App::empty(Keymap::default());
+            let inner_width = if kind == 2 { 74 } else { 70 };
+            let prefix = if kind == 2 { 0 } else { 2 };
+            set_input(&mut app, kind, &"a".repeat(inner_width - prefix));
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let exact = terminal.backend_mut().get_cursor_position().unwrap();
+            let left = (100 - if kind == 2 { 76 } else { 72 }) / 2 + 1;
+            assert_eq!(exact.x, left);
+            app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let typed = terminal.backend_mut().get_cursor_position().unwrap();
+            assert_eq!((typed.x, typed.y), (left + 1, exact.y));
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            assert_eq!(terminal.backend_mut().get_cursor_position().unwrap(), exact);
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let deleted = terminal.backend_mut().get_cursor_position().unwrap();
+            assert_eq!(deleted.x, left + inner_width as u16 - 1);
+            // Message height shrinks by one row and recenters; command/search
+            // retain their five-row minimum popup height.
+            assert_eq!(deleted.y, if kind == 2 { exact.y } else { exact.y - 1 });
+            assert_eq!(source(&app).len(), inner_width - prefix - 1);
+        }
+    }
+
+    #[test]
+    fn enter_submits_original_text_and_escape_has_no_submission_side_effect() {
+        let text = format!("{}end", "中文👩‍💻e\u{301}**source** ".repeat(20));
+        for kind in 0..3 {
+            let mut app = App::empty(Keymap::default());
+            let input = if kind == 0 {
+                format!("note {text}")
+            } else {
+                text.clone()
+            };
+            set_input(&mut app, kind, &input);
+            let mut terminal = Terminal::new(TestBackend::new(24, 8)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(app.mode, Mode::Browse);
+            match kind {
+                0 => assert_eq!(app.notes, vec![text.clone()]),
+                1 => assert_eq!(app.filter, text),
+                _ => assert_eq!(app.controls, vec![RunControl::Say(text.clone())]),
+            }
+            let (notes, filter, controls) =
+                (app.notes.clone(), app.filter.clone(), app.controls.clone());
+            set_input(&mut app, kind, "note must not submit");
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.mode, Mode::Browse);
+            assert_eq!(
+                (app.notes, app.filter, app.controls),
+                (notes, filter, controls)
+            );
+        }
+    }
+
+    #[test]
+    fn message_mode_notices_and_sanitized_input_remain_literal_on_small_terminal() {
+        for (planning, paused, notice) in [
+            (true, false, "只读讨论"),
+            (false, true, "已暂停"),
+            (false, false, "仍有编码权限"),
+        ] {
+            let mut app = App::empty(Keymap::default());
+            app.planning_only = planning;
+            if paused {
+                app.run.status = RunStatus::Paused;
+            }
+            app.mode = Mode::Message {
+                text: "**Ω**\t\x1b[2J".into(),
+            };
+            let mut terminal = Terminal::new(TestBackend::new(24, 8)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let output = screen(&terminal);
+            assert!(output.contains(notice));
+            assert!(output.contains("**Ω**"));
+            assert!(output.contains('�'));
+            assert!(output.contains("Enter") && output.contains("Esc"));
+            assert_eq!(source(&app), "**Ω**\t\x1b[2J");
+        }
+    }
+
+    #[test]
+    fn current_historical_and_streaming_markdown_keep_roles_and_whole_message_search() {
+        use duet_workbench::{app::TaskSelection, nodes::TaskRecord};
+        let mut app = App::empty(Keymap::default());
+        app.view = View::Tasks;
+        app.fullscreen = true;
+        app.task = Some("**request**".into());
+        for (role, content) in [
+            (
+                "user",
+                "**Ωvisible phrase**\n\n```\n*a_literal*\n# source\n```\n\n- list",
+            ),
+            ("assistant", "*λanswer*"),
+        ] {
+            app.history.push(Message {
+                session: "s".into(),
+                role: role.into(),
+                content: content.into(),
+            });
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+        for light in [false, true] {
+            app.light = light;
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let output = screen(&terminal);
+            assert!(output.contains("┌─ 你") && output.contains("┌─ AI"));
+            assert!(output.contains("*a_literal*") && output.contains("# source"));
+            assert!(!output.contains("**Ωvisible phrase**"));
+            let buffer = terminal.backend().buffer();
+            let user = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == "Ω")
+                .unwrap();
+            let ai = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == "λ")
+                .unwrap();
+            assert_ne!(user.fg, ai.fg);
+            assert!(user.modifier.contains(Modifier::BOLD));
+            assert!(ai.modifier.contains(Modifier::ITALIC));
+        }
+        for filter in ["Ωvisible phrase", "**Ωvisible phrase**"] {
+            app.filter = filter.into();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let output = screen(&terminal);
+            assert!(output.contains("┌─ 你") && output.contains("*a_literal*"));
+            assert!(!output.contains("λanswer"));
+        }
+        app.filter.clear();
+        app.run.streaming_text = true;
+        app.run.text = "**streaming_tail**".into();
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains("streaming_tail"));
+        app.run.streaming_text = false;
+        app.history.push(Message {
+            session: "s".into(),
+            role: "assistant".into(),
+            content: app.run.text.clone(),
+        });
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert_eq!(screen(&terminal).matches("streaming_tail").count(), 1);
+        let mut old = TaskRecord::legacy("old", "**historical request**", "s");
+        old.history = app.history.clone();
+        app.tasks = vec![old, TaskRecord::legacy("live", "live", "s")];
+        app.task_selection = Some(TaskSelection {
+            task_id: "old".into(),
+            node_id: None,
+        });
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert!(screen(&terminal).contains("historical request"));
+        assert_eq!(screen(&terminal).matches("streaming_tail").count(), 1);
+    }
+}
+
 #[cfg(unix)]
 mod controlled {
     use super::*;
