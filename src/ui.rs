@@ -311,7 +311,9 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             let height = frame.area().height.saturating_sub(4);
             let mut lines = vec![
                 Line::from("y ▶ AI 描述（需确认） · 4 描述 · 0 基线 / 1 主项目 / 2 候选 / 3 草稿"),
-                Line::from("← o 主项目 · → t 候选 · ◇ a 建议 · e 编辑 · m 确认解决 · x 停止 AI"),
+                Line::from(
+                    "← o 主项目 · → t 候选 · ◇ a 建议 · e 编辑 · m 解决 · l 锁文件授权 · x 停止 AI",
+                ),
                 Line::from("[ / ] 文件 · j/k 滚动 · Enter 最终 diff · r 新草稿 · Esc 返回"),
             ];
             if let Some(path) = draft.conflicts.get(*index) {
@@ -368,6 +370,12 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
                     "→ 用候选版本覆盖此冲突文件（主项目新修复可能丢失）"
                 }
                 crate::app::ConflictKind::ApplyAI => "◇ 应用 AI 建议到独立草稿；不是批准或合并",
+                crate::app::ConflictKind::Lockfile => {
+                    "允许额外集成范围 Cargo.lock · 不改原节点批准/契约、不生成文件/测试 · 仍需审核最终 diff"
+                }
+                crate::app::ConflictKind::Edit => {
+                    "启动本地编辑器，仅编辑独立草稿；编辑器具有当前账号权限，可运行其配置/插件"
+                }
                 crate::app::ConflictKind::Advise => {
                     "▶ 调用 AI 只读解释冲突，代码可能外发并消耗额度；不写文件"
                 }

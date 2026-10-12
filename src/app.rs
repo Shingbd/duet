@@ -91,6 +91,7 @@ pub enum ConflictKind {
     Advise,
     ApplyAI,
     StopAdvisor,
+    Lockfile,
 }
 #[derive(Debug, Clone)]
 pub struct ConflictRequest {
@@ -996,6 +997,7 @@ impl App {
                         *side = c as u8 - b'0';
                         ConflictKind::View(*side)
                     }
+                    KeyCode::Char('l') => ConflictKind::Lockfile,
                     KeyCode::Char('y') => ConflictKind::Advise,
                     KeyCode::Char('o') => ConflictKind::Choose(1),
                     KeyCode::Char('t') => ConflictKind::Choose(2),
@@ -1012,6 +1014,8 @@ impl App {
                     ConflictKind::Choose(_)
                         | ConflictKind::Advise
                         | ConflictKind::ApplyAI
+                        | ConflictKind::Lockfile
+                        | ConflictKind::Edit
                         | ConflictKind::Rebuild
                 ) {
                     self.mode = Mode::ConfirmConflict {

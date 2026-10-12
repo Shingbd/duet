@@ -237,6 +237,28 @@ fn task_cleanup_archives_owned_conflict_worktrees_without_touching_source() {
     );
 }
 #[test]
+fn lockfile_is_separately_authorized_without_changing_approved_nodes() {
+    use duet_workbench::conflict::{self, Preparation};
+    let (_dir, store, mut task, repo, mut draft) = setup_conflict();
+    assert!(conflict::authorize_lockfile(&repo, &store, &task, &mut draft).is_err());
+    task.nodes[0].contract.scope.push("Cargo.toml".into());
+    task.plan.as_mut().unwrap().nodes[0] = task.nodes[0].contract.clone();
+    let Preparation::Conflict(mut draft) = conflict::prepare(&repo, &store, &task, true).unwrap()
+    else {
+        panic!()
+    };
+    let node_before = task.nodes.clone();
+    let path = conflict::worktree(&store, &draft)
+        .unwrap()
+        .join("Cargo.lock");
+    fs::write(path, "human lockfile\n").unwrap();
+    assert!(conflict::refresh(&repo, &store, &task, &mut draft).is_err());
+    conflict::authorize_lockfile(&repo, &store, &task, &mut draft).unwrap();
+    conflict::refresh(&repo, &store, &task, &mut draft).unwrap();
+    assert_eq!(draft.extra_paths, vec!["Cargo.lock"]);
+    assert_eq!(task.nodes, node_before);
+}
+#[test]
 fn merge_uses_approved_immutable_tree_preserves_candidate_and_never_runs_hooks() {
     let (dir, mut store, mut task, candidate) = fixture();
     let repo = Repository::open(dir.path()).unwrap();

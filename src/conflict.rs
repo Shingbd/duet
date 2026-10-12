@@ -27,6 +27,8 @@ pub struct Draft {
     pub conflicts: Vec<String>,
     pub resolved: Vec<String>,
     #[serde(default)]
+    pub extra_paths: Vec<String>,
+    #[serde(default)]
     pub advice: Option<Advice>,
     #[serde(default)]
     pub advice_error: Option<String>,
@@ -187,6 +189,7 @@ pub fn prepare(
         branch: format!("duet/integration-{}-{nonce}", task.id),
         conflicts,
         resolved: Vec::new(),
+        extra_paths: Vec::new(),
         advice: None,
         advice_error: None,
     };
@@ -246,6 +249,10 @@ pub fn validate(
         repo.baseline()?.commit == draft.source_head && repo.branch_ref()? == draft.source_branch,
         "主项目 HEAD/分支已变化，r 创建新集成工作区；旧修复保留"
     );
+    ensure!(
+        draft.extra_paths.iter().all(|p| p == "Cargo.lock"),
+        "不支持的额外集成路径"
+    );
     identity(repo, store, draft)
 }
 pub fn display(repo: &Repository, draft: &Draft, index: usize, side: u8) -> Result<String> {
@@ -254,6 +261,9 @@ pub fn display(repo: &Repository, draft: &Draft, index: usize, side: u8) -> Resu
         return text(repo, draft, index, side);
     }
     let mut info = String::new();
+    if !draft.extra_paths.is_empty() {
+        info.push_str("◇ 已明确授权额外集成范围 Cargo.lock（节点批准未改，仍需审核最终 diff）\n");
+    }
     if let Some(error) = &draft.advice_error {
         info.push_str(&format!("⚠ AI 分析失败：{error}\n"));
     }
@@ -317,9 +327,10 @@ pub fn refresh(
     let snapshot = candidate.capture_worktree_from(&repo.resolve_snapshot(&draft.source_head)?)?;
     let changes = repo.snapshot_changes(&snapshot)?;
     ensure!(
-        changes
-            .iter()
-            .all(|c| task.nodes.iter().any(|n| n.contract.contains_path(&c.path))),
+        changes.iter().all(
+            |c| task.nodes.iter().any(|n| n.contract.contains_path(&c.path))
+                || draft.extra_paths.contains(&c.path)
+        ),
         "集成修复出现任务范围外修改；拒绝生成集成版本"
     );
     draft.snapshot = snapshot.commit;
@@ -399,6 +410,24 @@ pub fn mark(
         draft.resolved.push(path);
     }
     refresh(repo, store, task, draft)
+}
+pub fn authorize_lockfile(
+    repo: &Repository,
+    store: &WorkspaceStore,
+    task: &TaskRecord,
+    draft: &mut Draft,
+) -> Result<()> {
+    validate(repo, store, task, draft)?;
+    ensure!(
+        task.nodes
+            .iter()
+            .any(|n| n.contract.contains_path("Cargo.toml")),
+        "任务未授权 Cargo.toml，不能追加 Cargo.lock"
+    );
+    if !draft.extra_paths.iter().any(|p| p == "Cargo.lock") {
+        draft.extra_paths.push("Cargo.lock".into());
+    }
+    save(store, draft)
 }
 pub fn archive_task(
     repo: &Repository,

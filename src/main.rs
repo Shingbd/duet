@@ -516,6 +516,9 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         .find(|t| t.id == draft.task_id)
                         .context("任务不存在")?;
                     match request.kind {
+                        ConflictKind::Lockfile => duet_workbench::conflict::authorize_lockfile(
+                            &repo, &store, task, &mut draft,
+                        )?,
                         ConflictKind::View(n) => {
                             side = n;
                         }
