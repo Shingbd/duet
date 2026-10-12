@@ -143,6 +143,7 @@ pub struct TaskSelection {
 }
 
 pub struct App {
+    pub config: crate::config::Config,
     pub name: String,
     pub content_revision: u64,
     pub branch: String,
@@ -226,9 +227,32 @@ fn review_label(s: Review) -> &'static str {
 }
 
 impl App {
+    pub fn tr<'a>(&self, zh: &'a str, en: &'a str) -> &'a str {
+        self.config.language.text(zh, en)
+    }
     /// Describes only this workbench's current RPC session, not external Pi
     /// availability or the selected historical task. This never starts a session.
     pub fn pi_session_label(&self) -> &'static str {
+        if self.config.language == crate::config::Language::English {
+            return match (self.agent_connected, &self.run.status) {
+                (false, RunStatus::Idle) => "Pi session not started",
+                (false, RunStatus::Settled) => "Pi ended · ready for review",
+                (false, RunStatus::Aborted) => "Pi ended · cancelled",
+                (false, RunStatus::Failed) => "Pi failed · disconnected",
+                (false, RunStatus::Running) => "Pi disconnected · running",
+                (false, RunStatus::Pausing) => "Pi disconnected · confirming pause",
+                (false, RunStatus::Paused) => "Pi disconnected · paused",
+                (false, RunStatus::Cancelling) => "Pi disconnected · cancelling",
+                (true, RunStatus::Idle) => "Pi connected · idle",
+                (true, RunStatus::Running) => "Pi connected · running",
+                (true, RunStatus::Pausing) => "Pi connected · confirming pause",
+                (true, RunStatus::Paused) => "Pi connected · paused",
+                (true, RunStatus::Cancelling) => "Pi connected · cancelling",
+                (true, RunStatus::Settled) => "Pi connected · idle · ready for review",
+                (true, RunStatus::Aborted) => "Pi connected · idle · cancelled",
+                (true, RunStatus::Failed) => "Pi failed · connected",
+            };
+        }
         match (self.agent_connected, &self.run.status) {
             (false, RunStatus::Idle) => "Pi 会话未启动",
             (false, RunStatus::Settled) => "Pi 会话已结束 · 本轮结束待审核",
@@ -251,6 +275,7 @@ impl App {
 
     pub fn empty(keymap: Keymap) -> Self {
         Self {
+            config: crate::config::Config::default(),
             name: "工作台".into(),
             content_revision: 0,
             branch: String::new(),

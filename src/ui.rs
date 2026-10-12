@@ -173,7 +173,13 @@ fn draw_cached(
         area,
     );
     if area.width < 24 || area.height < 8 {
-        frame.render_widget(Paragraph::new("Duet · 请扩大终端至至少 24×8"), area);
+        frame.render_widget(
+            Paragraph::new(app.tr(
+                "Duet · 请扩大终端至至少 24×8",
+                "Duet · resize terminal to at least 24×8",
+            )),
+            area,
+        );
         return;
     }
     let rows = Layout::default()
@@ -186,9 +192,9 @@ fn draw_cached(
         ])
         .split(area);
     let badge = if app.branch.is_empty() {
-        "未打开项目"
+        app.tr("未打开项目", "No project")
     } else {
-        "项目只读浏览"
+        app.tr("项目只读浏览", "Read-only project")
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -204,9 +210,10 @@ fn draw_cached(
             ]),
             Line::from(Span::styled(
                 format!(
-                    " {}  ·  {}  ·  待读 {}",
+                    " {}  ·  {}  ·  {} {}",
                     safe_text(&app.branch),
                     app.pi_session_label(),
+                    app.tr("待读", "Unread"),
                     app.pending()
                 ),
                 Style::default().fg(theme.muted),
@@ -215,10 +222,26 @@ fn draw_cached(
         rows[0],
     );
     let views = [
-        format!("{} 任务", app.keymap.hint(Action::Tasks)),
-        format!("{} 审核", app.keymap.hint(Action::Review)),
-        format!("{} 项目", app.keymap.hint(Action::Project)),
-        format!("{} 知识", app.keymap.hint(Action::Knowledge)),
+        format!(
+            "{} {}",
+            app.keymap.hint(Action::Tasks),
+            app.tr("任务", "Tasks")
+        ),
+        format!(
+            "{} {}",
+            app.keymap.hint(Action::Review),
+            app.tr("审核", "Review")
+        ),
+        format!(
+            "{} {}",
+            app.keymap.hint(Action::Project),
+            app.tr("项目", "Project")
+        ),
+        format!(
+            "{} {}",
+            app.keymap.hint(Action::Knowledge),
+            app.tr("知识", "Knowledge")
+        ),
     ];
     let index = match app.view {
         View::Tasks => 0,
@@ -280,12 +303,13 @@ fn draw_cached(
         app.status.clone()
     };
     let focus = format!(
-        " 焦点：{} · ",
+        " {}：{} · ",
+        app.tr("焦点", "Focus"),
         match app.panel {
-            Panel::Queue if app.view == View::Tasks => "任务 / 节点",
-            Panel::Queue => "文件列表",
-            Panel::Reader => "内容",
-            Panel::Evidence => "说明 / 验证",
+            Panel::Queue if app.view == View::Tasks => app.tr("任务 / 节点", "Tasks / nodes"),
+            Panel::Queue => app.tr("文件列表", "Files"),
+            Panel::Reader => app.tr("内容", "Content"),
+            Panel::Evidence => app.tr("说明 / 验证", "Evidence / verification"),
         }
     );
     let mut status_spans = vec![Span::styled(
@@ -305,7 +329,10 @@ fn draw_cached(
         Paragraph::new(vec![
             Line::from(status_spans),
             Line::from(Span::styled(
-                format!(
+                if app.config.language==crate::config::Language::English {
+                    format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
+                }else{
+format!(
                     " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
                         format!(
@@ -332,7 +359,8 @@ fn draw_cached(
                     app.keymap.hint(Action::MarkRead),
                     app.keymap.hint(Action::Palette),
                     app.keymap.hint(Action::Help)
-                ),
+                )
+                },
                 Style::default().fg(theme.muted),
             )),
         ]),
@@ -345,9 +373,21 @@ fn draw_cached(
                 .keymap
                 .help
                 .iter()
-                .map(|(_, keys, label)| Line::from(format!("{keys:14} {label}")))
+                .map(|(action, keys, label)| {
+                    Line::from(format!(
+                        "{keys:14} {}",
+                        app.tr(label, action.english_label())
+                    ))
+                })
                 .collect();
-            popup(frame, theme, " 快捷键 · Esc 关闭 ", lines, 64, 24);
+            popup(
+                frame,
+                theme,
+                app.tr(" 快捷键 · Esc 关闭 ", " Keys · Esc close "),
+                lines,
+                72,
+                24,
+            );
         }
         Mode::Message { text } => {
             let title = if app.planning_only {
@@ -795,7 +835,10 @@ fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                 .take(visible)
                 .collect::<Vec<_>>(),
         )
-        .block(theme.block(" 文件 / 待审 ", app.panel == Panel::Queue)),
+        .block(theme.block(
+            app.tr(" 文件 / 待审 ", " Files / review "),
+            app.panel == Panel::Queue,
+        )),
         area,
     );
 }
@@ -833,7 +876,10 @@ fn task_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
         })
         .collect();
     frame.render_widget(
-        List::new(items).block(theme.block(" 任务 · 节点 ", app.panel == Panel::Queue)),
+        List::new(items).block(theme.block(
+            app.tr(" 任务 · 节点 ", " Tasks · nodes "),
+            app.panel == Panel::Queue,
+        )),
         area,
     );
 }
@@ -1695,7 +1741,10 @@ fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut 
     }
     frame.render_widget(
         Paragraph::new(style_markdown(&cache.lines, app.light))
-            .block(theme.block(" 说明 / 验证 ", app.panel == Panel::Evidence))
+            .block(theme.block(
+                app.tr(" 说明 / 验证 ", " Evidence / verification "),
+                app.panel == Panel::Evidence,
+            ))
             .scroll((
                 if app.view == View::Tasks {
                     app.task_evidence_scroll

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "language": "zh-CN",
+  "theme": "restore",
+  "default_view": "restore",
+  "keymap_file": null,
+  "editor": "vi",
+  "agent": {
+    "pi_path": "pi",
+    "model": null,
+    "timeout_secs": 600
+  },
+  "performance": {
+    "active_poll_ms": 16,
+    "idle_poll_ms": 500,
+    "save_delay_ms": 300,
+    "save_max_delay_ms": 2000
+  }
+}

@@ -19,7 +19,7 @@ Turn a request into structured tasks, implement them in isolated Git worktrees, 
 - **Local continuity.** SQLite stores discussions, contracts, attempts, notes, and reading state. Restarting restores history, not an executing agent.
 - **Readable terminal UI.** Markdown, semantic contract colors, light/dark themes, and Unicode-aware input wrapping support Chinese text and long messages.
 
-**Early-stage project:** the current TUI is primarily Chinese. These bilingual READMEs do not imply an English UI or complete multi-agent automation.
+**Early-stage project:** the current TUI is primarily Chinese. An optional English UI currently covers core navigation/session labels and help; workflow dialogs and many errors remain Chinese. Complete localization and multi-agent automation are not yet available.
 
 ## Quick start
 
@@ -48,6 +48,18 @@ To open Duet's own repository:
 ```
 
 Prefer release builds for everyday use, especially over SSH. Quit an old process with `q` before opening the rebuilt version.
+
+## Configuration
+
+Defaults are shipped in [`duet.default.json`](duet.default.json). This repository includes a minimal [`duet.json`](duet.json) selecting Chinese; edit it directly. For another project without a config, create one explicitly:
+
+```bash
+./target/release/duet-workbench config init duet.json
+./target/release/duet-workbench config show .
+./target/release/duet-workbench --language en --theme light open .
+```
+
+Preferences include language (`zh-CN` / partial `en`), theme, initial view, keymap, editor, Pi executable/model, execution budget, and UI polling/save delays. Precedence: built-in → user-global → project's `duet.json` → `--config` → CLI overrides. Preferences never grant model/write/merge permission. See the [configuration guide](docs/configuration.md) for paths, validation, and language coverage.
 
 ## The workflow
 
@@ -143,6 +155,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 
 ## Documentation
 
+- [Configuration reference — bilingual](docs/configuration.md)
 - [Detailed operating guide — Chinese](docs/user-guide.zh-CN.md)
 - [Task and node contracts](docs/nodes.md)
 - [Task pipeline and integration](docs/task-pipeline.md)

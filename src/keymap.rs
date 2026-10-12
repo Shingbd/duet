@@ -41,6 +41,41 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    pub fn english_label(self) -> &'static str {
+        match self {
+            Self::Tasks => "Tasks",
+            Self::Review => "Review",
+            Self::Project => "Project",
+            Self::Knowledge => "Knowledge",
+            Self::NextPanel => "Next panel",
+            Self::PreviousPanel => "Previous panel",
+            Self::Up => "Up",
+            Self::Down => "Down",
+            Self::PreviousItem => "Previous file",
+            Self::NextItem => "Next file",
+            Self::PreviousNode => "Previous node",
+            Self::NextNode => "Next node",
+            Self::Open => "Open / switch content page",
+            Self::Explain => "Show / hide explanation",
+            Self::Fullscreen => "Full screen",
+            Self::Help => "Keyboard help",
+            Self::Palette => "Command input",
+            Self::Search => "Search",
+            Self::Theme => "Toggle theme",
+            Self::MarkRead => "Mark read (not approval)",
+            Self::ApproveNode => "Approve current checkpoint (confirm)",
+            Self::StartTask => "Start / continue saved plan (authorize)",
+            Self::DeleteSelected => "Delete / roll back selection (confirm)",
+            Self::MergeTask => "Review integration and confirm merge",
+            Self::RetryTask => "Retry failed task (confirm)",
+            Self::Cancel => "Cancel execution",
+            Self::Pause => "Pause / resume execution",
+            Self::Reply => "Discuss / correct / follow up",
+            Self::Quit => "Quit",
+        }
+    }
+}
 pub const ACTIONS: &[(Action, &str, &[&str])] = &[
     (Action::Tasks, "任务视图", &["1"]),
     (Action::Review, "审核视图", &["2"]),

@@ -9,6 +9,7 @@ use duet_workbench::{
     app::{App, Mode, RunControl},
     checkpoint::Repository,
     coding::CodingRun,
+    config::{Config, Language, Theme},
     keymap::Keymap,
     rpc::PiClient,
     storage::WorkspaceStore,
@@ -22,15 +23,39 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "Duet：本地 AI 协作工作台")]
+#[command(version, about = "Duet: local-first human-AI development workbench")]
 struct Cli {
     #[arg(long, global = true)]
     keymap: Option<PathBuf>,
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    #[arg(long, global = true, value_enum)]
+    language: Option<Language>,
+    #[arg(long, global = true, value_enum)]
+    theme: Option<Theme>,
     #[command(subcommand)]
     command: Option<Command>,
 }
 #[derive(Subcommand)]
+enum ConfigCommand {
+    /// Explicitly create the default preferences without overwriting a file.
+    Init {
+        #[arg(default_value = "duet.json")]
+        path: PathBuf,
+    },
+    /// Print effective preferences; does not open a workspace or call Pi.
+    Show {
+        #[arg(default_value = ".")]
+        project: PathBuf,
+    },
+}
+#[derive(Subcommand)]
 enum Command {
+    /// Preferences only: no implicit model calls or write permissions.
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommand,
+    },
     /// 打开当前文件夹。
     #[command(alias = "demo")]
     Workspace,
@@ -57,43 +82,96 @@ enum Command {
         repo: PathBuf,
         #[arg(long)]
         prompt: String,
-        /// Explicit consent: model may read/write files with this OS account's permissions.
+        /// Model may read/write with this OS account's permissions.
         #[arg(long)]
         allow_write: bool,
-        #[arg(long, default_value = "pi")]
-        pi: PathBuf,
+        #[arg(long)]
+        pi: Option<PathBuf>,
         #[arg(long)]
         model: Option<String>,
-        #[arg(long, default_value_t = 600)]
-        timeout_secs: u64,
-        /// Non-interactive execution; still requires --allow-write.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
         #[arg(long)]
         headless: bool,
     },
     Snapshot {
         #[arg(long)]
         repo: PathBuf,
-        #[arg(long, required = true, num_args = 1..)]
+        #[arg(long,required=true,num_args=1..)]
         paths: Vec<String>,
     },
-    /// Pi RPC 连通性检查，不调用模型。
+    /// Pi RPC connectivity only; never sends a prompt.
     PiProbe {
         #[arg(long)]
         repo: PathBuf,
-        #[arg(long, default_value = "pi")]
-        pi: PathBuf,
+        #[arg(long)]
+        pi: Option<PathBuf>,
     },
 }
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let keymap = match cli.keymap {
-        Some(path) => Keymap::load(&path)?,
+    let command = cli.command.unwrap_or(Command::Workspace);
+    if let Command::Config {
+        action: ConfigCommand::Init { path },
+    } = &command
+    {
+        Config::initialize(path)?;
+        println!("{}", path.display());
+        return Ok(());
+    }
+    let project = match &command {
+        Command::Open { path } | Command::Init { path } => path.as_path(),
+        Command::Browse { repo, .. }
+        | Command::Code { repo, .. }
+        | Command::Snapshot { repo, .. }
+        | Command::PiProbe { repo, .. } => repo.as_path(),
+        Command::Config {
+            action: ConfigCommand::Show { project },
+        } => project.as_path(),
+        _ => Path::new("."),
+    };
+    let mut config = Config::load(project, cli.config.as_deref())?;
+    if let Some(language) = cli.language {
+        config.language = language;
+    }
+    if let Some(theme) = cli.theme {
+        config.theme = theme;
+    }
+    if let Some(keymap) = cli.keymap {
+        config.keymap_file = Some(keymap);
+    }
+    match &command {
+        Command::Code {
+            pi,
+            model,
+            timeout_secs,
+            ..
+        } => {
+            if let Some(pi) = pi {
+                config.agent.pi_path = pi.clone();
+            }
+            if let Some(model) = model {
+                config.agent.model = Some(model.clone());
+            }
+            if let Some(timeout) = timeout_secs {
+                config.agent.timeout_secs = *timeout;
+            }
+        }
+        Command::PiProbe { pi: Some(pi), .. } => config.agent.pi_path = pi.clone(),
+        _ => {}
+    }
+    config.validate()?;
+    if matches!(command, Command::Config { .. }) {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+        return Ok(());
+    }
+    let keymap = match &config.keymap_file {
+        Some(path) => Keymap::load(path)?,
         None => Keymap::default(),
     };
-    match cli.command.unwrap_or(Command::Workspace) {
-        Command::Workspace => open_project(Path::new("."), keymap),
-        Command::Open { path } => open_project(&path, keymap),
+    match command {
+        Command::Workspace => open_project(Path::new("."), keymap, config),
+        Command::Open { path } => open_project(&path, keymap, config),
         Command::Init { path } => {
             let store = WorkspaceStore::open(&path)?;
             println!("{}", store.directory().display());
@@ -108,24 +186,19 @@ fn main() -> Result<()> {
             let store = WorkspaceStore::open(repo.root())?;
             let mut app = App::browse(&repo, snapshot, keymap)?;
             store.restore(&mut app)?;
+            config.apply(&mut app);
             run(app, store, None)
         }
         Command::Code {
             repo,
             prompt,
             allow_write,
-            pi,
-            model,
-            timeout_secs,
             headless,
+            ..
         } => {
             ensure!(
                 allow_write,
                 "编码需要 --allow-write 明确授权。模型请求可能外发代码；worktree 不是安全沙箱。"
-            );
-            ensure!(
-                timeout_secs > 0 && timeout_secs <= 3600,
-                "超时必须为 1—3600 秒"
             );
             if !headless {
                 require_terminal()?;
@@ -134,12 +207,13 @@ fn main() -> Result<()> {
             let mut store = WorkspaceStore::open(repo.root())?;
             let mut app = App::browse(&repo, repo.baseline()?, keymap)?;
             store.restore(&mut app)?;
+            config.apply(&mut app);
             let mut coding = CodingRun::start_planning(
                 repo.root(),
-                &pi,
-                model.as_deref(),
+                &config.agent.pi_path,
+                config.agent.model.as_deref(),
                 &prompt,
-                Duration::from_secs(timeout_secs),
+                Duration::from_secs(config.agent.timeout_secs),
                 &mut store,
                 &mut app,
             )?;
@@ -175,9 +249,9 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())
         }
-        Command::PiProbe { repo, pi } => {
+        Command::PiProbe { repo, .. } => {
             let repo = Repository::open(&repo)?;
-            let mut client = PiClient::spawn(&pi, repo.root())?;
+            let mut client = PiClient::spawn(&config.agent.pi_path, repo.root())?;
             let state = client.get_state(Duration::from_secs(20))?;
             println!(
                 "Pi RPC connected; session={} streaming={}; no prompt sent",
@@ -186,10 +260,11 @@ fn main() -> Result<()> {
             );
             client.shutdown()
         }
+        Command::Config { .. } => unreachable!(),
     }
 }
 
-fn open_project(path: &Path, keymap: Keymap) -> Result<()> {
+fn open_project(path: &Path, keymap: Keymap, config: Config) -> Result<()> {
     require_terminal()?;
     let root = path.canonicalize()?;
     let store = WorkspaceStore::open(&root)?;
@@ -206,6 +281,7 @@ fn open_project(path: &Path, keymap: Keymap) -> Result<()> {
         .to_string_lossy()
         .into();
     store.restore(&mut app)?;
+    config.apply(&mut app);
     run(app, store, None)
 }
 
@@ -227,6 +303,7 @@ impl Drop for TerminalGuard {
 
 fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -> Result<()> {
     require_terminal()?;
+    let config = app.config.clone();
     enable_raw_mode().context("无法进入终端 raw mode")?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
@@ -320,8 +397,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         }
         // Paint first; persist batched navigation only after idle or a bounded delay.
         if save_since.is_some_and(|since| {
-            since.elapsed() >= Duration::from_secs(2)
-                || last_input.elapsed() >= Duration::from_millis(300)
+            since.elapsed() >= Duration::from_millis(config.performance.save_max_delay_ms)
+                || last_input.elapsed() >= Duration::from_millis(config.performance.save_delay_ms)
         }) {
             store.save(&app)?;
             save_since = None;
@@ -337,11 +414,11 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             || coding.as_ref().is_some_and(|run| !run.is_finished())
                 && app.run.status != duet_workbench::rpc::RunStatus::Paused
         {
-            Duration::from_millis(16)
+            Duration::from_millis(config.performance.active_poll_ms)
         } else if save_since.is_some() {
             Duration::from_millis(50)
         } else {
-            Duration::from_millis(500)
+            Duration::from_millis(config.performance.idle_poll_ms)
         };
         if event::poll(wait)? {
             // Drain queued input before drawing so key repeats/pastes don't queue frames.
@@ -421,10 +498,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     });
                     let mut c = CodingRun::open_existing(
                         &id,
-                        Path::new("pi"),
-                        None,
+                        &config.agent.pi_path,
+                        config.agent.model.as_deref(),
                         true,
-                        Duration::from_secs(600),
+                        Duration::from_secs(config.agent.timeout_secs),
                         &mut store,
                         &mut app,
                     )?;
@@ -537,8 +614,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             return Ok(Some(Mode::MergePreview { preview, scroll: 0 }));
                         }
                         ConflictKind::Advise => {
-                            advisor = Some(duet_workbench::conflict_ai::Advisor::start(
-                                Path::new("pi"),
+                            advisor = Some(duet_workbench::conflict_ai::Advisor::start_configured(
+                                &config.agent,
                                 &repo,
                                 &store,
                                 task,
@@ -563,10 +640,11 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             let path = duet_workbench::conflict::edit_path(
                                 &repo, &store, task, &draft, index,
                             )?;
-                            let editor =
-                                std::env::var_os("DUET_EDITOR").unwrap_or_else(|| "vi".into());
+                            let editor = std::env::var_os("DUET_EDITOR")
+                                .unwrap_or_else(|| config.editor.clone().into_os_string());
                             ensure!(
-                                !editor.to_string_lossy().contains(char::is_whitespace),
+                                !editor.is_empty()
+                                    && !editor.to_string_lossy().chars().any(char::is_control),
                                 "DUET_EDITOR 仅接受可执行文件路径，不接受 shell 参数"
                             );
                             disable_raw_mode()?;
@@ -662,10 +740,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     }
                     CodingRun::open_existing(
                         &id,
-                        Path::new("pi"),
-                        None,
+                        &config.agent.pi_path,
+                        config.agent.model.as_deref(),
                         false,
-                        Duration::from_secs(600),
+                        Duration::from_secs(config.agent.timeout_secs),
                         &mut store,
                         &mut app,
                     )
@@ -713,10 +791,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         if let Some(id) = selection {
                             let mut c = CodingRun::open_existing(
                                 &id,
-                                Path::new("pi"),
-                                None,
+                                &config.agent.pi_path,
+                                config.agent.model.as_deref(),
                                 true,
-                                Duration::from_secs(600),
+                                Duration::from_secs(config.agent.timeout_secs),
                                 &mut store,
                                 &mut app,
                             )?;
@@ -730,10 +808,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                                 .to_owned();
                             coding = Some(CodingRun::start_drafting(
                                 &project,
-                                Path::new("pi"),
-                                None,
+                                &config.agent.pi_path,
+                                config.agent.model.as_deref(),
                                 message,
-                                Duration::from_secs(600),
+                                Duration::from_secs(config.agent.timeout_secs),
                                 &mut store,
                                 &mut app,
                             )?);
@@ -767,10 +845,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
                 match CodingRun::start_drafting(
                     &project,
-                    Path::new("pi"),
-                    None,
+                    &config.agent.pi_path,
+                    config.agent.model.as_deref(),
                     &prompt,
-                    Duration::from_secs(600),
+                    Duration::from_secs(config.agent.timeout_secs),
                     &mut store,
                     &mut app,
                 ) {

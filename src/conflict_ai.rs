@@ -64,6 +64,25 @@ impl Advisor {
         draft: &Draft,
         index: usize,
     ) -> Result<Self> {
+        let settings = crate::config::AgentConfig {
+            pi_path: executable.to_owned(),
+            ..Default::default()
+        };
+        Self::start_configured(&settings, repo, store, task, draft, index)
+    }
+    pub fn start_configured(
+        settings: &crate::config::AgentConfig,
+        repo: &Repository,
+        store: &crate::storage::WorkspaceStore,
+        task: &TaskRecord,
+        draft: &Draft,
+        index: usize,
+    ) -> Result<Self> {
+        crate::config::Config {
+            agent: settings.clone(),
+            ..Default::default()
+        }
+        .validate()?;
         conflict::validate(repo, store, task, draft)?;
         let path = draft.conflicts.get(index).context("冲突文件缺失")?;
         let merged = conflict::text(repo, draft, index, 3)?;
@@ -96,10 +115,10 @@ impl Advisor {
             .join("sessions");
         conflict::private_dir(&folder)?;
         let mut client = PiClient::spawn_planner(
-            executable,
+            &settings.pi_path,
             &conflict::worktree(store, draft)?,
             &folder,
-            None,
+            settings.model.as_deref(),
         )?;
         let state = client.get_state(Duration::from_secs(20))?;
         ensure!(state["model"].is_object(), "Pi 模型不可用");
@@ -114,7 +133,7 @@ impl Advisor {
             state,
             draft: draft.clone(),
             index,
-            deadline: Instant::now() + Duration::from_secs(600),
+            deadline: Instant::now() + Duration::from_secs(settings.timeout_secs),
         })
     }
     pub fn poll(&mut self) -> Result<Option<Advice>> {

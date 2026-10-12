@@ -19,7 +19,7 @@
 - **本地保存进度。** SQLite 保存讨论、契约、尝试、笔记和阅读状态；重启恢复历史，不恢复正在执行的 Agent。
 - **适合中文终端阅读。** Markdown、契约语义配色、明暗主题，以及支持中文、emoji 和组合字符的输入折行。
 
-**项目仍处于早期阶段。** 当前 TUI 主要使用中文；双语 README 不代表已有英文界面或完整多 Agent 自动化。
+**项目仍处于早期阶段。** 当前 TUI 主要使用中文；英文界面选项目前覆盖基础导航、会话标签与帮助，工作流弹窗和许多错误仍为中文；尚未具备完整多语言界面或多 Agent 自动化。
 
 ## 快速开始
 
@@ -48,6 +48,18 @@ cargo build --release
 ```
 
 日常使用，尤其 SSH 环境，建议运行 release 版本。重编译后先用 `q` 退出旧进程，再打开新版。
+
+## 配置文件
+
+默认值位于 [`duet.default.json`](duet.default.json)。本仓库已附带选择中文的精简 [`duet.json`](duet.json)，可以直接编辑；其他尚无配置的项目按需明确生成：
+
+```bash
+./target/release/duet-workbench config init duet.json
+./target/release/duet-workbench config show .
+./target/release/duet-workbench --language zh-CN --theme dark open .
+```
+
+可配置语言（`zh-CN` / 部分英文 `en`）、主题、初始视图、快捷键、编辑器、Pi 路径/模型、执行预算和界面轮询/保存延迟。优先级：内置默认 → 用户全局 → 项目 `duet.json` → `--config` → 命令行参数。配置不代替模型、写入或合入授权。路径、校验和语言覆盖范围见[配置说明](docs/configuration.md)。
 
 ## 从需求到合入
 
@@ -143,6 +155,7 @@ python3 scripts/merge-smoke.py target/release/duet-workbench
 
 ## 更多文档
 
+- [配置说明（中英）](docs/configuration.md)
 - [详细操作指南](docs/user-guide.zh-CN.md)
 - [任务与节点契约](docs/nodes.md)
 - [任务流水线与集成](docs/task-pipeline.md)
