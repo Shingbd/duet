@@ -1,221 +1,153 @@
 # Duet Workbench
 
-Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区。默认无示例数据、无模拟 Agent。
+**A local-first Rust terminal workbench for human–AI development.**
 
-## 打开项目
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+Turn a request into structured tasks, implement them in isolated Git worktrees, review immutable diffs, and decide explicitly what enters your project.
+
+> **The AI proposes and implements. You authorize, review, and merge.**
+> Opening Duet never calls a model or resumes an old task automatically.
+
+## Why Duet?
+
+- **Structured work, not just chat.** Each task contains dependency-ordered nodes with objectives, scope, boundaries, implementation guidance, constraints, and acceptance criteria.
+- **Keep your project separate.** AI implementation runs in a managed worktree. Uncommitted changes in your main working directory are not silently included in a task.
+- **Review fixed versions.** Live previews and final deliveries are immutable Git snapshots. Review follows the selected node without stealing unrelated reading positions.
+- **Separate implementation, verification, and approval.** “Implemented” is not “tests passed.” Approval is tied to a specific node checkpoint.
+- **Human-led conflict resolution.** A read-only AI advisor can explain conflicting changes and their trade-offs. Only your confirmed choice modifies the integration draft.
+- **Local continuity.** SQLite stores discussions, contracts, attempts, notes, and reading state. Restarting restores history, not an executing agent.
+- **Readable terminal UI.** Markdown, semantic contract colors, light/dark themes, and Unicode-aware input wrapping support Chinese text and long messages.
+
+**Early-stage project:** the current TUI is primarily Chinese. These bilingual READMEs do not imply an English UI or complete multi-agent automation.
+
+## Quick start
+
+### Requirements
+
+- Rust **1.90+** and Cargo.
+- Git; AI coding requires a repository with a committed baseline.
+- A terminal capable of displaying Unicode. The automated process/PTY tests target Unix.
+- For AI features: Node.js **22.19+** and a configured, authenticated **Pi CLI** available as `pi` on `PATH`. Pi 1.1.0 has been used in development.
+
+You can browse and restore local records without starting Pi. Model calls require explicit authorization.
+
+### Build and open
 
 ```bash
-./target/release/duet-workbench open /path/to/project
+git clone https://github.com/Shingbd/duet.git
+cd duet
+cargo build --release
+./target/release/duet-workbench open /path/to/your/project
 ```
 
-首次打开自动创建 `.duet/`，再次打开恢复笔记、阅读位置、主题、历史任务、节点契约与各节点固定检查点。SQLite schema 6 自动迁移旧数据，并按不可变 diff 纠正旧版空交付误报；旧任务不伪造节点，也不自动重新调用模型。支持普通文件夹；Git 项目默认阅读固定 HEAD，不覆盖未提交改动。
+To open Duet's own repository:
+
+```bash
+./target/release/duet-workbench open .
+```
+
+Prefer release builds for everyday use, especially over SSH. Quit an old process with `q` before opening the rebuilt version.
+
+## The workflow
 
 ```text
-.duet/
-  .gitignore        本地数据排除规则
-  workspace.db      对话、任务记录、笔记、阅读进度
-  workspace.lock    单实例项目锁
-  sessions/         Pi 原始会话
-  worktrees/        独立编码工作区
-  integrations/     冲突草稿、不可变版本与 AI 建议
+Discuss → Confirm the plan → Implement nodes → Review checkpoints
+        → Approve nodes → Review integration diff → Confirm merge
 ```
 
-数据本地明文保存。默认被 Git 忽略，不修改项目根 .gitignore。不要提交或公开包含敏感信息的会话。当前一次只允许一个工作台打开同一数据目录；崩溃中的任务恢复为中断，不自动重跑。
+| Step | Action | What it authorizes |
+| --- | --- | --- |
+| Discuss | `1` → `i`, enter your request | Read-only AI discussion; no automatic implementation |
+| Start or continue | `s` → `Enter` | Write access in the task worktree for the confirmed plan |
+| Review | `2`; `{` / `}` switch nodes | Inspect the selected node's fixed diff |
+| Approve a node | `a` → `Enter` in review | Approve that exact checkpoint; no testing or merging |
+| Continue after a review pause | `p` | Explicitly resume; approval alone does not resume execution |
+| Integrate | `g` | Open the whole-task integration diff or conflict draft |
+| Merge from the final diff | `Enter`, then `Enter` | Open risk confirmation, then explicitly apply the merge |
 
-## AI 编码
+`Esc` cancels a dialog without granting its requested authorization. All nodes must be implemented and approved at their current final checkpoints before integration.
 
-### Pi 可用与工作台会话状态
+### If changes conflict
 
-**外部 `pi` 命令可以正常使用，不代表 Duet 当前已经建立 Pi RPC 会话。** 页眉描述的是当前工作台持有的会话，不是 Pi 的安装、服务或认证可用性，也不是所选历史任务的连接状态。
+Duet creates a separate integration draft; your main project and original candidate remain untouched.
 
-打开项目默认只恢复本地数据，不启动 Pi；当前 `agent_connected` 初始为 `false`，首次打开时页眉显示“Pi 会话未启动”，这是正常状态。退出/重启后也不会恢复 Pi 执行，即使历史任务仍在，也没有自动重连或续跑。只有显式启动任务并确认授权后，工作台才建立 RPC 会话；不会为了消除状态提示自动启动 Pi、探测认证或调用模型。
+- `y` → `Enter`: ask AI to explain the current file. This may send code to a provider and consume quota; the advisor cannot write files.
+- `o` / `t` / `a` → `Enter`: explicitly choose the main version, candidate version, or an available AI patch. Whole-file choices can discard the other side's changes.
+- `e` → `Enter`: edit locally; `m` captures the repair and marks the file handled. The editor defaults to `vi`; `DUET_EDITOR` accepts one executable path.
+- `3` views the fixed draft; `4` shows explanations. `0` / `1` / `2` compare the base, main, and candidate.
+- `l` → `Enter`: separately authorize `Cargo.lock` when needed and the task already authorizes `Cargo.toml`; this does not generate files or run Cargo.
+- When every file is handled, `Enter` opens a **new immutable final diff**. Review it, then use the two confirmation steps to merge.
 
-页眉文案区分会话是否存活与执行状态：
+A handled conflict is not a passed test. If the draft is already prepared, follow its highlighted next step rather than choosing a version again. Main HEAD/branch or approval changes invalidate the old draft; `r` explicitly creates a new one while preserving old repairs.
 
-- “Pi 会话已连接 · 运行中”：当前会话正在执行。
-- “Pi 会话已连接 · 暂停中（等待确认）”与“Pi 会话已连接 · 已暂停”：分别表示正在确认停止和已经暂停；暂停不等于会话关闭。
-- “Pi 会话已连接 · 空闲”或“Pi 会话已连接 · 空闲 · 本轮结束待审核”：会话仍存活，当前没有执行。
-- “Pi 会话已结束 · 本轮结束待审核”或“Pi 会话已结束 · 已取消”：会话已关闭，区别于已连接但空闲。
-- “Pi 会话失败 · 未连接”或“Pi 会话失败 · 已连接”：执行失败；连接状态不能替代具体错误信息。
+### Recover without starting over
 
-如果任务启动或运行失败，请查看底栏状态中的实际错误信息，再据此排查；不要仅凭无会话提示判断 Pi 未安装或认证异常。“Pi 会话未启动”本身不是故障诊断，也不需要为消除提示重新配置认证。
+Errors and their stages are persisted. `r` confirms a retry of a failed discussion; implementation recovery uses `s` and the saved plan. Continuation preserves candidate files and includes a fixed-version handoff in a **new** Pi session; it does not recover the original session or guarantee that the model will preserve every line.
 
-```bash
-./target/debug/duet-workbench code --repo /path/to/project --prompt "具体改动要求" --allow-write
+The default active budget is 600 seconds per start/continuation, excluding pauses and review backpressure. No automatic retries or model switches occur.
+
+## Navigation
+
+| Keys | Purpose |
+| --- | --- |
+| `1` / `2` / `3` / `4` | Tasks / Review / Project / Knowledge |
+| `Tab`, `j` / `k`, arrow keys | Change focus; select or scroll according to the focused panel |
+| `[` / `]` | Previous / next file |
+| `f`, `t`, `?` | Full screen, theme, help |
+| `/`, `:` | Search, command input |
+| `p`, `Ctrl+X` | Pause/resume execution, cancel execution |
+| `d` → `Enter` | Delete a task, or roll back a node and its topological successors, after backup |
+| `q` | Quit; does not resume work on next launch |
+
+Keys are contextual: for example, `a` approves a node in review but selects a proposal inside a conflict dialog. Lowercase shortcuts are configurable with `--keymap`; uppercase `J/K` are reserved by default. Input wraps visually without inserting newlines; `Enter` submits and `Esc` cancels.
+
+## Local data and safety
+
+```text
+your-project/.duet/
+├── workspace.db    # Tasks, messages, contracts, notes, reading state
+├── workspace.lock  # Single-instance project lock
+├── sessions/       # Pi session logs
+├── worktrees/      # Implementation candidates
+├── integrations/   # Conflict drafts and advice
+└── backups/        # Merge/discard backups
 ```
 
-工作台中按 `1` → `i` 输入需求，与 AI 只读讨论节点划分、架构、边界和验收条件；信息不足时 AI 会先提问。也可用 `:plan 需求`（`:code 需求` 兼容）创建只读讨论。计划准备好后按 **`s`**，Enter 确认当前完整计划并授权独立工作区写入；Esc 返回讨论。讨论结束不会自动编码。退出后选中已保存任务仍可 `s` 明确启动，不新建重复任务。CLI `code --allow-write` 保留明确授权后直接规划并实施的行为。
+- Data is **local plaintext** and Git-ignored by default. Do not publish private session logs or databases.
+- A worktree is **not an OS security sandbox**. Model tools have the current account's filesystem access; authorized model calls may disclose code to providers.
+- Duet's AI workflow does not expose bash or load arbitrary Pi extensions, MCP servers, skills, or repository context.
+- Duet does not automatically run tests, stash, push, deploy, or merge. Controlled merge disables Git hooks, fsmonitor, and signing.
+- Dirty main workspaces, stale approvals, failed verification, unsafe paths, and unsupported Git drivers/filters or hidden index flags are rejected. Do not modify main Git state concurrently with integration.
+- Deleted records/candidates are backed up first. Deletion does not undo an already merged commit or unknown changes outside the managed workspace.
 
-需要 Git 已提交基线及已配置模型/认证的 Pi。默认使用 Pi 当前模型，可指定 `--model provider/model`。
+## Current limits
 
-- 创建独立 worktree 和任务分支，原工作区不变。
-- 先以只读工具生成结构化节点计划，校验必填字段、ID、范围、依赖与无环性，失败不进入写入阶段。
-- 按依赖顺序逐节点实现。节点有目标、范围/边界、实现方法、约束、依赖和验收条件；一个任务最多 32 个节点。
-- Pi 运行期间可同步阅读固定版本和记笔记；实现完成、验收状态、人工批准分别记录。
-- 打开项目不会启动 Pi RPC：页眉“Pi 会话未启动”表示此工作台尚无会话，不代表外部 `pi` 不可用；重启不恢复执行，启动失败看实际错误。
-- 对话按“你 / AI”分块并用不同颜色显示；工具/思考专用的空正文不会作为聊天消息展示，旧空消息重启时也会隐藏。
-- 运行期间 write/edit 工具完成后，约 200 ms 合并采集不可变 Git 预览；直接进入 `2` 并选择正在修改的节点，就会自动看到 diff 增长/删减，保留文件路径和滚动；无需开启开关，`v` 已移除。预览不能批准，新节点不会抢历史阅读。每个节点结束后单独生成固定检查点进入待审；后一个节点的差异不含前一个节点的变更。当前活动/最后节点可明确纠正或追问，返工保留旧执行和检查点，不继承旧批准。
-- 重启恢复历史任务、节点、全部已发布检查点和阅读位置。审核只显示选中节点的变化文件，以颜色和 `M/A/D` 区分修改、新增、删除；不读取可变 worktree。
-- 不自动测试、合并、部署或递归启动任务。
-- 不加载 Pi 扩展、MCP、skills 或仓库上下文；仅开放文件读取、编辑和写入等工具，不开放 bash。
-- 每次启动/续写的总执行预算默认 600 秒，不是每节点 600 秒；暂停/待审不计入。预算耗尽记为明确超时失败并保存部分修改，不伪装成人工取消；s 再确认可续写。浏览状态 p 暂停/继续，i 纠正/追问，Ctrl+X 取消，退出中断任务。
-- 暂停按 clear_queue → abort → get_state 确认停止，保留已产生的改动，不回滚。暂停时输入的纠正仅记录，明确继续后才发送；暂停等待时间不计入剩余执行时间。
-- 运行中发送的消息在工具调用边界接收，不代表立即中断。需立即制止时先暂停，并等待“已暂停”。
-- 工作目录和 worktree 不是安全沙箱；授权后 Agent 仍有当前账号的文件访问权限，模型调用可能向提供商发送代码。
-- 未提交的源项目改动不自动纳入任务基线。
+The verification Runner and fixed-version test evidence are **not yet implemented**. Acceptance criteria remain unverified unless independently recorded; external maintenance tests do not change node verification status.
 
-单个任务有两个未批准节点时，在节点边界停止继续执行。审核界面按 `a` 打开确认框，再按 Enter 批准（Esc 取消；`:approve-node` 仍兼容），再按 p 明确继续；批准不会自行恢复或合并代码。
-非交互执行可加 `--headless`，仍需明确写入授权；超过待审积压阈值会停止，不能替代人类审阅。退出/重启不恢复 Pi 执行；已有任务可用 s 明确启动/从候选状态继续（新 Pi 会话，不复活旧会话，不恢复未发送纠正）；任意历史节点返工仍未接入。默认没有虚构教学内容。
+Also pending: arbitrary historical-node rework, original Pi session/queue recovery, independent review agents, multi-agent scheduling, background startup/snapshotting, and an OS sandbox. Baseline browsing currently loads the first 80 files, up to 1 MiB per file; node-change review is not subject to the 80-file limit.
 
-## 失败与重试
-模型限额、网络/会话或规划校验失败会明确显示“失败”，保留需求/讨论/候选，并持久化错误原因与失败阶段。不会自动重连、循环重试或切换模型。
-在 1 选中失败任务，按 **r**（命令 :retry-task，配置 retry_task）：
-- 讨论/规划失败：Enter 确认重新调用模型，使用原任务/候选与最近讨论输入只读重试；Esc 取消，不新建重复任务、不写代码。额度需先自行恢复。
-- 编码失败：进入已有计划的 s 写入授权确认流程，保留已产生改动；不自动复活原 Pi 队列或把失败当完成。
-s 启动/继续整个任务剩余节点的顺序调度，不同时启动所有节点；起点按依赖顺序取第一个未实现节点，不按当前浏览位置决定。确认框用绿色 ✓ 表示已实现并跳过，突出 ▶ 表示续跑起点，灰色 ○ 表示后续节点（✓ 不是人工批准或验收通过），已实现但待审核的节点也不会重跑；多个节点可能继续修改同一个文件。
-取消执行不使已定稿计划失效；已有有效计划、未完成节点且待审积压未满时，可直接 s 再次确认写入继续，不要求重新讨论。无计划、讨论未定稿、契约变化仍需先讨论。
-停止后 s 使用新 Pi 会话，但不 reset/清理候选；启动前捕获当前内容，新提示附恢复版本、先前检查点/部分修改文件、前置已实现节点和上次总结，要求先读取现有代码并补齐未完成部分，而非从零重做。模型仍可能修改授权 scope 内代码，应继续审核，不承诺恢复原会话/思考。
-失败原因在重启后仍可见；旧记录 runs=Failed 而任务误显示“准备好”时，打开后纠正为 Failed，只从匹配本地会话中提取原错误；无法找到时明确标注原因未记录。加载不调用模型。
-
-## 纠正与追问
-
-按 `1` 进入任务视图：
-1. 发现方向不对，按 `p`，等状态变为“已暂停”。
-2. 按 `i` 输入纠正意见，Enter 提交；此时只记录，AI 不会自行继续。
-3. 再按 `p` 明确继续，沿用原会话及工作区执行纠正。
-4. 运行中或本轮结束后也可按 `i` 追问，输入内容会交给同一编码会话。
-
-对应命令：`:pause`、`:resume`、`:say 消息`、`:cancel`。
-开始实施前，`i` 为只读讨论，可以更新未执行节点并保留计划修订历史；不能静默覆盖已执行节点契约。按 `s` 授权实施后，活动编码会话中的 `i` 是纠正/追问，仍可能写文件，输入框明确标识。
-退出/重启不自动恢复运行中的 Pi；暂停期间未发送的纠正需重新提交。已有候选改动与记录保留，选中任务后 s 确认才继续。旧计划如果误带“仅规划”约束，先 i 讨论修订，s 不会擅自移除限制。
-
-## 查看 AI 生成的文件
-AI 结果在独立 worktree，尚未合入主项目，所以不一定出现在主项目 HEAD 的文件列表。
-按 `1`：左侧历史任务和节点树，列表焦点下 j/k 选择任务/节点；正文为任务对话或节点契约，不显示文件列表。
-按 `2`：侧栏为待审节点，左大括号 `{` 为上一节点，右大括号 `}` 为下一节点（通常 Shift+[ / Shift+]）；仅展开选中节点的文件，j/k 在文件列表焦点下或 `[` / `]` 切这些文件。正文为固定 diff，M 黄色/A 绿色/D 红色。`:changes` 仍为兼容入口。
-按 `3`：浏览项目基线文件，不混入 AI 候选版本。
-新增、修改、删除的文件都有入口；待审文件不受基线前 80 个文件的预览限制。删除文件也显示对应 diff，无法读取的文件显示错误，不回退到可变工作区。
-重启恢复任务/节点选择、对应固定版本、已读和滚动位置。m 只标记文件已读；明确批准节点按 `a`（或输入 `:approve-node`），Enter 确认、Esc 取消，绑定当前检查点，不运行测试或合并。验证 Runner 尚未接入，验收条目默认未验证。
-
-## 合并到主项目
-全部节点完成且逐节点 `a` 批准当前最终检查点后，按 **`g`**（或 `:merge-task`）：
-1. 查看整任务相对当前主项目的集成 diff；j/k、PageUp/Down 滚动，Esc 取消，此时主项目未变。
-2. Enter 进入最终确认，显示未验证节点数量；再 Enter 明确接受当前验证状态并合并，Esc 取消。
-实际合并只使用批准的固定快照，不读取候选中的额外可变改动。生成保留主项目新提交的两父集成提交，再快进主分支；不自动测试、stash、push、部署或执行 Git hooks。验收失败、冲突、未批准版本、脏主项目、正在进行的 Git 操作、预览后 HEAD/分支/审批变化都会拒绝。自定义 merge driver/checkout filter、skip-worktree/assume-unchanged 暂不支持。
-合并前备份数据库、Git bundle 与确认信息；重启仅核对已确认合并的结果，不执行待合并意图。成功后任务显示“已合并”，`3` 更新到新 HEAD。保留候选/记录供追溯；已合并任务不能再次编码，后续改动新建任务。不要同时用外部工具修改主项目 Git。
-
-## 集成冲突：AI 描述，人类决定
-g 检测到冲突后建立独立集成草稿，不改主项目、不改原候选/批准版本。界面先显示“待决定”或“修复已准备，等你审阅”，突出当前下一步；已处理文件不再显示未应用建议/替换块计数，参考说明不冒充实际修复或验收证据。若草稿改了尚未授权的 Cargo.lock，明确解释依赖版本清单并提示 l→Enter；不会因检测自动授权/捕获。
-- **y → Enter**：AI 只读解释当前文件的冲突原因、双方目的、各方案收益/损失与推荐；可消耗额度并外发代码。AI 不能编辑、测试、批准或合并。x 停止；限额/错误保存并允许人类再次 y，不自动循环重试。
-- **[ / ]** 切文件；**4** 描述；**0 / 1 / 2 / 3** 看固定基线/主项目/候选/草稿；j/k、PageUp/Down 滚动。
-- **← o / → t / ◇ a → Enter**：人类明确选主项目、候选或 AI 建议。只修改独立草稿；AI 建议仅允许匹配对应固定文件的完整唯一冲突块，不能暗改块外内容，文件变化则拒绝。
-- **l → Enter**：只额外授权集成 Cargo.lock（任务须已授权 Cargo.toml）。不改原节点批准/契约、不自动生成或运行 cargo；锁文件仍纳入最终 diff。
-- **e → Enter** 打开本地编辑器备选（默认 vi，DUET_EDITOR 只接受单个可执行文件路径，不执行 shell 字符串）。**m** 捕获修改并确认此文件解决；未清除标记不能标记解决。
-- 全部 **✓** 后 **Enter** 生成新不可变最终 diff，再 Enter 进入风险确认，再 Enter 合并。文件选择、AI 推荐、标记解决都不是批准/合并/测试通过。
-主项目 HEAD/分支、任务/批准变化时禁止继续旧草稿；r 经确认另建新草稿，旧人工修复不被覆盖。进度/建议保存在私有 integrations JSON；重启 g 回到同一草稿，不启动 AI。删除任务/节点时相关草稿先归档再清理。当前按 UTF-8 文本文件处理；复杂/无法可靠建议的冲突需人工编辑，不是自动冲突求解器。测试 Runner 仍未接入。
-
-## 删除与撤回
-在任务界面选择节点，按 `d`，Enter 确认：删除该节点及拓扑顺序中全部后续节点的记录/讨论/预览，并将候选 worktree 撤回到该节点开始前。先前节点保留。确认框明确提示连带范围，Esc 取消。
-选择任务根行按 `d`：删除整个任务、消息、节点、候选 worktree、分支及已知检查点引用。运行中的所选任务先停止；主项目、人工未提交文件和其他任务不变。私有 `.duet/backups/discard-*` 保留数据库、源码、Git bundle 与日志备份；删除不是取消，也不撤销已合并的主项目代码；已合并任务仅允许整任务清理记录/候选，节点撤回需另行处理 Git revert或模型仓外写入。
-共享原始 Pi 日志可能含多个节点，删除后仅留在私有备份；未删除节点的可见对话保留。仓外访问不是 OS 沙箱，不能承诺撤回未知仓外变更。
-
-## 任务与节点
-用户完整需求为任务，AI 拆分的执行单元为节点。已接通“只读规划 → 校验 → 逐节点执行 → 固定检查点 → 按节点审核”。规划器的只读权限不应成为编码契约中的禁写要求；发现“仅规划”等冲突会拒绝进入编码。节点检查点无文件改动时标记“未交付”，暂停后续节点，不能批准为实现完成；活动会话中先 `i` 纠正，再 `p` 继续。已批准节点仍可在审核界面查看文件。详细约定见 `docs/nodes.md` 与 `docs/task-pipeline.md`。
-当前布局为任务/节点树而非图形 DAG；依赖在契约中展示。任意历史节点的结构化返工与验收 Runner 仍待实现；整任务最终集成 diff 与明确确认的受控合并已接通。
-
-## 其他命令
-
-`init 文件夹`：初始化本地数据，不需要终端。
-`browse --repo 文件夹 --snapshot Git引用`：查看固定快照。
-`snapshot --repo 文件夹 --paths 文件路径`：捕获明确选择的文件。
-`pi-probe --repo 文件夹`：仅验证 RPC，不调用模型。
-不带参数默认打开当前目录。旧 `demo` 命令仅为兼容别名，不再提供模拟交付。
-
-## 操作
-
-1—4 切视图；Tab 切面板；方向键或小写 j/k 浏览（大写 J/K 默认未绑定，保留扩展）；[ / ] 切文件；Enter 切内容页。
-底栏显示当前焦点：文件列表中 j/k 切文件，内容中 j/k 滚动；全屏自动聚焦内容，Tab 返回多面板。输入命令/搜索时 j/k 正常输入，Esc 返回浏览。
-e 切说明；f 全屏；t 切主题；/ 搜索；: 输入命令；? 帮助。
-m 标记已读，不代表批准；审核界面的 a 批准当前节点版本，仍需确认。命令 `note 内容` 保存笔记。快捷键可通过 `--keymap` 配置。
-
-## Markdown 与长输入展示
-
-自然语言默认直接显示终端 Markdown：当前/历史/流式对话、任务需求、节点契约正文、笔记、意图、说明、证据及自然语言提示。项目视图仅对扩展名为 `.md`、`.markdown`、`.mdown`、`.mkd`（大小写不敏感）的固定文件启用 Markdown；`.mdx`、普通文本文件与源码仍按字面显示。
-
-- 标题、粗体、斜体、删除线用片段样式区分；列表保留编号或项目符号，引用带 `>`，分隔线用横线表示。
-- 行内代码和代码块保留字面内容（含代码块空行）；链接显示文字与目标地址，图片显示替代文字与地址，不获取图片。
-- 任务列表显示 `[ ]` / `[x]`，只是文档文字。勾选不能替代真实验收、人工批准或授权；契约另有 `□ 未验证`、执行状态及人工审核标签，不仅依赖颜色。
-- 表格在空间充足时按列显示，窄屏降级为列名/值，保留单元格文字。不完整流式 Markdown 按当前整条消息重新排版；不支持的语法尽量保留可读文字，HTML 按文字显示而不解释。
-- 明暗主题均区分契约标题、字段、正文、边界/约束、验收和状态；聊天仍保留“你 / AI”标签与角色配色。
-- 源码、固定 diff（含集成 diff 预览）、路径、ID、版本、快捷键和正在编辑的输入不作 Markdown 解释；固定 diff 保留增删配色。
-- 不自动打开链接、访问网络、执行代码或解释 HTML/终端控制序列。控制字符安全替换；不能容纳单个宽字符的极窄列以 `?` 降级，零宽区域不输出内容。
-
-命令 `:`、搜索 `/` 和 AI 消息 `i` 输入按终端单元格自动折行，可显示第二行；超过可用高度时跟随末尾，保留光标和提交/取消提示。折行按中文、emoji 和组合字符边界处理，终端缩放后重新计算布局。输入仍是字面原文，**自动折行不插入换行、不改写提交内容**；Enter 提交、Esc 取消，原有命令解析与消息权限提示不变。输入框不是 Markdown 编辑预览，也不改变授权行为。
-
-### 本次展示回归：由人类明确启动
-
-以下仅是建议命令与核查步骤，**本节点未运行测试、格式检查或人工终端核查，新增用例未标记为通过**。没有新增 Runner，也不调用真实模型。
-
-```bash
-cargo fmt --check
-cargo test --test markdown
-cargo test --test conversation display_regression
-cargo test --test node_workflow display_regression
-cargo test --test review_ui display_regression
-cargo test --test performance
-```
-
-`display_regression` 用例使用内存契约与 TestBackend；`node_workflow` 测试文件限定 Unix。Markdown 用例覆盖结构、行内样式、Unicode、窄表格、不完整流式文本及恶意控制字符；展示用例覆盖主题、文档选择规则、字面 diff、角色、搜索及三种输入的折行/尾部/光标/缩放/删除/提交取消。性能用例检查内容与宽度变化失效、主题与滚动复用；通过布局构建计数验证缓存命中（命中时不进入 Markdown 解析/排版分支），不是独立解析次数计数器。现有固定源码缓存用例保留，模拟 Agent 活动不应触发源码重新排版。
-
-人工核查建议只使用本地已有固定记录或专用演示项目，不为验证显示而启动 AI、授权写入、批准节点、合并或部署：
-
-1. 打开已有节点，`t` 切明暗主题，`f` 切全屏；在正常尺寸（如 100×36）和窄屏（40×20）滚动所有字段。检查标题/字段/正文/约束层次、长 Markdown 字段折行、路径/版本原样及“未验证 / 待审”文字。文档 `[x]` 不得改变真实状态。
-2. 查看当前与历史对话、笔记、意图、说明和证据；检查标题、强调、列表、引用、代码块空行、链接、分隔线、任务列表及宽/窄表格。流式/不完整正文由上述内存测试覆盖；不要为人工核查自动调用模型。搜索原始 Markdown 和可见正文短语，清除搜索后检查整条消息与滚动、角色标签。
-3. 在项目视图比较 Markdown 文件与源码；在审核视图比较固定 diff，确认 `**`、`#` 等源码字符未被解释，增删颜色仍不同。链接、图片、HTML 和控制字符不得产生打开页面、下载、执行或清屏行为。
-4. 分别在 `:`、`/`、`i` 输入超过一行及超长内容（例如重复 `中文ASCII👩‍💻é**literal**`），检查第二行、尾部与光标；将终端在 100×30、24×8 间缩放，检查提示仍可见。测试恰好满行、再输入一个字符及 Backspace 跨行；用 Esc 退出，确认没有提交。
-5. 仅在专用演示项目中，可用长 `note 内容`、长搜索和无编码会话的消息输入检查 Enter 保留原文及 Esc 无副作用；不要发送会触发模型或写入授权的命令。提交/取消的精确状态断言由 TestBackend 回归覆盖。
-
-## 开发与验证
-
-Rust 1.90，ratatui/crossterm，SQLite；AI 执行依赖 Node.js 22.19+ 与 Pi CLI，当前验证版本 Pi 1.1.0。
+## Development
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo build
-python3 scripts/terminal-smoke.py
-python3 scripts/navigation-smoke.py target/release/duet-workbench
-python3 scripts/conversation-smoke.py target/release/duet-workbench
-python3 scripts/node-smoke.py target/release/duet-workbench
-python3 scripts/task-controls-smoke.py target/release/duet-workbench
-python3 scripts/merge-smoke.py target/release/duet-workbench
-python3 scripts/retry-smoke.py target/release/duet-workbench
+cargo build --release
+
 python3 scripts/conflict-smoke.py target/release/duet-workbench
+python3 scripts/merge-smoke.py target/release/duet-workbench
 ```
 
-Unix 假 RPC 和 PTY 测试需要 Python 3。自动测试不调用真实模型。
-crates.io 较慢时可为构建命令添加：
-`--config 'source.crates-io.replace-with="ustc"' --config 'source.ustc.registry="sparse+https://mirrors.ustc.edu.cn/crates.io-index/"'`。
+The test suite uses fake RPC processes and real temporary Git repositories/PTYs, not live model calls. Python 3 is required for the smoke scripts. Additional scripts cover task controls, retry, nodes, conversations, navigation, terminal restoration, and performance.
 
-## 性能与 SSH
-日常运行建议 cargo build --release，再使用 target/release/duet-workbench；debug 编译主要用于开发。
-界面按需重绘，固定文件的折行排版缓存；连续输入合并处理，SQLite 仅写变更。
-笔记与阅读状态在停顿约 300 ms 后保存，连续操作最长约 2 秒批量保存；正常退出立即保存。
-突发崩溃可能丢失最后这段尚未保存的界面状态；真实任务与完整对话消息仍直接持久化。
+## Documentation
 
-本地 PTY 性能测试（临时 Git 项目，不调用模型或网络）：
-```bash
-python3 scripts/performance-probe.py target/debug/duet-workbench target/release/duet-workbench
-```
-6000 行文件 / 120×32 终端的优化前后测量见 docs/performance.md。
-这只测本机，不包含 SSH、终端客户端或网络 RTT；高延迟 SSH 仍会给每次反馈增加网络耗时。
+- [Detailed operating guide — Chinese](docs/user-guide.zh-CN.md)
+- [Task and node contracts](docs/nodes.md)
+- [Task pipeline and integration](docs/task-pipeline.md)
+- [Implementation status and history](docs/phase-1.md)
+- [Performance measurements and caveats](docs/performance.md)
+- [Example keymap](examples/keymap.json)
 
-## 当前边界
-
-已具备受控手动任务的第一条编码链路，不是完整自主多 Agent 平台。
-节点契约、只读拆分、顺序执行、节点审核与任务历史导航已实现；97 项自动测试、严格 clippy 与 release PTY 验证通过。新节点流水线以假 RPC 验证，尚未完成新的真实模型端到端验证。
-本次 Markdown/多行输入与冲突决策的集成候选由维护者外部验证：141 项测试、严格 clippy 和 8 组假 RPC/真实 PTY 通过。这不是固定版本验证 Runner 证据，不修改原节点 Unverified 状态；最终仍需人类审阅和确认。
-待实现：验证 Runner、独立审查、固定版本验证证据、原 Pi 会话/队列恢复、任意历史节点返工、后台启动与按需 AI 教学。
-浏览暂载入前 80 个文件，每文件 1 MiB；没有完整 IDE 编辑、语法高亮或系统级沙箱。
-详见 `docs/phase-1.md`。
+The detailed design and history documents are currently in Chinese.
