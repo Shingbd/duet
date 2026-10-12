@@ -1,6 +1,8 @@
 pub mod app;
 pub mod checkpoint;
 pub mod coding;
+pub mod conflict;
+pub mod conflict_ai;
 pub mod keymap;
 pub mod merge;
 pub mod nodes;

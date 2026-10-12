@@ -301,6 +301,93 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             72,
             7,
         ),
+        Mode::Conflict {
+            draft,
+            index,
+            side,
+            scroll,
+            body,
+        } => {
+            let height = frame.area().height.saturating_sub(4);
+            let mut lines = vec![
+                Line::from("y ▶ AI 描述（需确认） · 4 描述 · 0 基线 / 1 主项目 / 2 候选 / 3 草稿"),
+                Line::from("← o 主项目 · → t 候选 · ◇ a 建议 · e 编辑 · m 确认解决 · x 停止 AI"),
+                Line::from("[ / ] 文件 · j/k 滚动 · Enter 最终 diff · r 新草稿 · Esc 返回"),
+            ];
+            if let Some(path) = draft.conflicts.get(*index) {
+                lines.insert(
+                    0,
+                    Line::from(format!(
+                        "{} {} · {}/{} · {}/{} ✓",
+                        if draft.resolved.contains(path) {
+                            "✓"
+                        } else {
+                            "⚠"
+                        },
+                        safe_text(path),
+                        index + 1,
+                        draft.conflicts.len(),
+                        draft.resolved.len(),
+                        draft.conflicts.len()
+                    )),
+                );
+            }
+            lines.push(Line::from(format!(
+                "{} · 工作区：.duet/integrations/{}/{}/worktree",
+                match side {
+                    0 => "基线",
+                    1 => "主项目",
+                    2 => "候选",
+                    3 => "固定草稿",
+                    _ => "AI 描述",
+                },
+                draft.task_id,
+                draft.nonce
+            )));
+            lines.extend(
+                body.lines()
+                    .skip(*scroll)
+                    .take(height.saturating_sub(8) as usize)
+                    .map(|l| Line::from(safe_text(l))),
+            );
+            popup(
+                frame,
+                theme,
+                " ⚠ 集成冲突 · 主项目未变 ",
+                lines,
+                140,
+                height,
+            );
+        }
+        Mode::ConfirmConflict { draft, index, kind } => {
+            let operation = match kind {
+                crate::app::ConflictKind::Choose(1) => {
+                    "← 用主项目版本覆盖此冲突文件（候选相关改动可能丢失）"
+                }
+                crate::app::ConflictKind::Choose(2) => {
+                    "→ 用候选版本覆盖此冲突文件（主项目新修复可能丢失）"
+                }
+                crate::app::ConflictKind::ApplyAI => "◇ 应用 AI 建议到独立草稿；不是批准或合并",
+                crate::app::ConflictKind::Advise => {
+                    "▶ 调用 AI 只读解释冲突，代码可能外发并消耗额度；不写文件"
+                }
+                _ => "另建当前主项目的集成草稿；旧草稿和人工修改保留",
+            };
+            popup(
+                frame,
+                theme,
+                " 人类决定 ",
+                vec![
+                    Line::from(safe_text(
+                        draft.conflicts.get(*index).map_or("", String::as_str),
+                    )),
+                    Line::from(operation),
+                    Line::from("Enter 确认 · Esc 取消"),
+                ],
+                110,
+                7,
+            );
+        }
         Mode::MergePreview { preview, scroll } => {
             let height = frame.area().height.saturating_sub(4);
             let mut lines = vec![

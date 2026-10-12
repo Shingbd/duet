@@ -33,6 +33,12 @@ pub fn prepare(
     repo.merge_guard()?;
     let branch = repo.branch_ref()?;
     let source_head = repo.baseline()?.commit;
+    let previous = validate_delivery(repo, task)?;
+    let snapshot = repo.prepare_integration(&source_head, &previous, &task.id)?;
+    preview(repo, task, source_head, branch, previous, snapshot.commit)
+}
+pub fn validate_delivery(repo: &Repository, task: &TaskRecord) -> Result<String> {
+    task.merge_ready()?;
     let order = task.plan.as_ref().unwrap().order()?;
     let mut previous = task.baseline.clone().context("任务原始基线缺失")?;
     for &index in &order {
@@ -65,7 +71,17 @@ pub fn prepare(
         task.checkpoint.as_deref() == Some(&previous),
         "任务最终版本与批准节点链不一致"
     );
-    let snapshot = repo.prepare_integration(&source_head, &previous, &task.id)?;
+    Ok(previous)
+}
+pub fn preview(
+    repo: &Repository,
+    task: &TaskRecord,
+    source_head: String,
+    branch: String,
+    previous: String,
+    commit: String,
+) -> Result<MergePreview> {
+    let snapshot = repo.resolve_snapshot(&commit)?;
     let paths = repo
         .snapshot_changes(&snapshot)?
         .into_iter()

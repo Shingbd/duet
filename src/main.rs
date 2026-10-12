@@ -241,7 +241,73 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut redraw = true;
     let mut save_since: Option<Instant> = None;
     let mut last_input = Instant::now();
+    let mut advisor: Option<duet_workbench::conflict_ai::Advisor> = None;
     loop {
+        if let Some(a) = &mut advisor {
+            let result = a.poll();
+            app.run = a.state.clone();
+            redraw = true;
+            match result {
+                Ok(None) => {}
+                outcome => {
+                    let mut a = advisor.take().unwrap();
+                    let _ = a.stop();
+                    app.agent_connected = false;
+                    let repo = Repository::open(store.directory().parent().unwrap())?;
+                    let mut draft = duet_workbench::conflict::load(&store, &a.draft.task_id)?
+                        .context("集成草稿不存在")?;
+                    let task = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == draft.task_id)
+                        .context("任务不存在")?;
+                    match outcome {
+                        Ok(Some(report)) => {
+                            if let Err(e) =
+                                duet_workbench::conflict::validate(&repo, &store, task, &draft)
+                            {
+                                draft.advice_error = Some(e.to_string());
+                            } else if draft.snapshot != a.draft.snapshot {
+                                draft.advice_error =
+                                    Some("草稿在分析期间变化，建议未应用，请重新分析".into());
+                            } else {
+                                if let Some(previous) = &mut draft.advice {
+                                    previous
+                                        .files
+                                        .retain(|f| !report.files.iter().any(|n| n.path == f.path));
+                                }
+                                let mut report = report;
+                                if let Some(previous) = draft.advice.take() {
+                                    report.files.extend(previous.files);
+                                }
+                                draft.advice = Some(report);
+                                draft.advice_error = None;
+                            }
+                        }
+                        Err(e) => {
+                            draft.advice_error = Some(e.to_string().chars().take(2000).collect());
+                            app.run.status = duet_workbench::rpc::RunStatus::Failed;
+                        }
+                        _ => {}
+                    }
+                    duet_workbench::conflict::save(&store, &draft)?;
+                    if matches!(
+                        app.mode,
+                        Mode::Conflict { .. } | Mode::ConfirmConflict { .. }
+                    ) {
+                        let body = duet_workbench::conflict::display(&repo, &draft, a.index, 4)?;
+                        app.mode = Mode::Conflict {
+                            draft,
+                            index: a.index,
+                            side: 4,
+                            scroll: 0,
+                            body,
+                        };
+                    }
+                    app.status = "AI 分析已结束 · 只提出建议，未修改文件 · 人类决定".into();
+                }
+            }
+        }
         if let Some(coding) = &mut coding
             && coding.poll(&mut app, &mut store)?
         {
@@ -267,8 +333,9 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         if app.quit {
             break;
         }
-        let wait = if coding.as_ref().is_some_and(|run| !run.is_finished())
-            && app.run.status != duet_workbench::rpc::RunStatus::Paused
+        let wait = if advisor.is_some()
+            || coding.as_ref().is_some_and(|run| !run.is_finished())
+                && app.run.status != duet_workbench::rpc::RunStatus::Paused
         {
             Duration::from_millis(16)
         } else if save_since.is_some() {
@@ -304,6 +371,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             }
             if let Some(selection) = app.requested_delete.take() {
                 let result = (|| -> Result<()> {
+                    ensure!(advisor.is_none(), "请先 x 停止冲突分析再删除任务");
                     if coding.as_ref().is_some_and(|c| c.id == selection.task_id)
                         && let Some(mut c) = coding.take()
                     {
@@ -317,6 +385,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             }
             if let Some((id, fingerprint)) = app.requested_retry.take() {
                 let result = (|| -> Result<()> {
+                    ensure!(advisor.is_none(), "请先 x 停止冲突顾问");
                     ensure!(
                         coding.as_ref().is_none_or(|c| c.is_finished()),
                         "仍有活动任务，请等待结束后重试"
@@ -384,7 +453,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
             }
             if let Some(id) = app.requested_merge_preview.take() {
-                let result = (|| -> Result<duet_workbench::merge::MergePreview> {
+                let result = (|| -> Result<duet_workbench::conflict::Preparation> {
+                    ensure!(advisor.is_none(), "请先结束冲突分析");
                     ensure!(
                         coding.as_ref().is_none_or(|c| c.is_finished()),
                         "还有活动编码/讨论，请等任务完全结束"
@@ -395,15 +465,152 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         .iter()
                         .find(|t| t.id == id)
                         .context("任务不存在")?;
-                    duet_workbench::merge::prepare(&repo, &store, task)
+                    duet_workbench::conflict::prepare(&repo, &store, task, false)
                 })();
                 match result {
-                    Ok(preview) => app.mode = Mode::MergePreview { preview, scroll: 0 },
+                    Ok(duet_workbench::conflict::Preparation::Preview(preview)) => {
+                        app.mode = Mode::MergePreview { preview, scroll: 0 }
+                    }
+                    Ok(duet_workbench::conflict::Preparation::Conflict(draft)) => {
+                        let repo = Repository::open(store.directory().parent().unwrap())?;
+                        let body = duet_workbench::conflict::display(&repo, &draft, 0, 4)?;
+                        app.mode = Mode::Conflict {
+                            draft,
+                            index: 0,
+                            side: 4,
+                            scroll: 0,
+                            body,
+                        };
+                    }
                     Err(e) => app.status = format!("不能预览合并：{e}"),
+                }
+            }
+            if let Some(request) = app.requested_conflict.take() {
+                use duet_workbench::app::ConflictKind;
+                let mut draft = request.draft;
+                let index = request.index;
+                let mut side = 4;
+                let result = (|| -> Result<Option<Mode>> {
+                    if request.kind == ConflictKind::StopAdvisor {
+                        if let Some(mut a) = advisor.take() {
+                            a.stop()?;
+                            app.agent_connected = false;
+                            app.run.status = duet_workbench::rpc::RunStatus::Aborted;
+                        }
+                    } else {
+                        ensure!(advisor.is_none(), "AI 正在只读分析；请等待或 x 停止");
+                    }
+                    ensure!(
+                        coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "仍有活动编码，不能处理集成冲突"
+                    );
+                    if request.kind == ConflictKind::Advise
+                        && let Some(mut c) = coding.take()
+                    {
+                        c.stop(&mut app, &mut store)?;
+                    }
+                    let repo = Repository::open(store.directory().parent().unwrap())?;
+                    let task = app
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == draft.task_id)
+                        .context("任务不存在")?;
+                    match request.kind {
+                        ConflictKind::View(n) => {
+                            side = n;
+                        }
+                        ConflictKind::Choose(n) => duet_workbench::conflict::choose(
+                            &repo, &store, task, &mut draft, index, n,
+                        )?,
+                        ConflictKind::Mark => {
+                            duet_workbench::conflict::mark(&repo, &store, task, &mut draft, index)?
+                        }
+                        ConflictKind::ApplyAI => duet_workbench::conflict_ai::apply(
+                            &repo, &store, task, &mut draft, index,
+                        )?,
+                        ConflictKind::Finish => {
+                            let preview =
+                                duet_workbench::conflict::finish(&repo, &store, task, &mut draft)?;
+                            return Ok(Some(Mode::MergePreview { preview, scroll: 0 }));
+                        }
+                        ConflictKind::Advise => {
+                            advisor = Some(duet_workbench::conflict_ai::Advisor::start(
+                                Path::new("pi"),
+                                &repo,
+                                &store,
+                                task,
+                                &draft,
+                                index,
+                            )?);
+                            app.agent_connected = true;
+                            app.run = advisor.as_ref().unwrap().state.clone();
+                            app.status = "AI 只读分析当前冲突 · 未应用任何方案 · x 可停止".into();
+                        }
+                        ConflictKind::Rebuild => {
+                            match duet_workbench::conflict::prepare(&repo, &store, task, true)? {
+                                duet_workbench::conflict::Preparation::Conflict(new) => {
+                                    draft = new;
+                                }
+                                duet_workbench::conflict::Preparation::Preview(preview) => {
+                                    return Ok(Some(Mode::MergePreview { preview, scroll: 0 }));
+                                }
+                            }
+                        }
+                        ConflictKind::Edit => {
+                            let path = duet_workbench::conflict::edit_path(
+                                &repo, &store, task, &draft, index,
+                            )?;
+                            let editor =
+                                std::env::var_os("DUET_EDITOR").unwrap_or_else(|| "vi".into());
+                            ensure!(
+                                !editor.to_string_lossy().contains(char::is_whitespace),
+                                "DUET_EDITOR 仅接受可执行文件路径，不接受 shell 参数"
+                            );
+                            disable_raw_mode()?;
+                            execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+                            let status = std::process::Command::new(editor).arg(&path).status();
+                            enable_raw_mode()?;
+                            execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+                            terminal.clear()?;
+                            ensure!(status?.success(), "编辑器未正常退出，原草稿保留");
+                            duet_workbench::conflict::refresh(&repo, &store, task, &mut draft)?;
+                        }
+                        ConflictKind::StopAdvisor => {}
+                    }
+                    let body = duet_workbench::conflict::display(&repo, &draft, index, side)?;
+                    Ok(Some(Mode::Conflict {
+                        draft: draft.clone(),
+                        index,
+                        side,
+                        scroll: 0,
+                        body,
+                    }))
+                })();
+                match result {
+                    Ok(Some(mode)) => app.mode = mode,
+                    Ok(None) => {}
+                    Err(e) => {
+                        app.status = format!("冲突操作未完成：{e}");
+                        if request.kind == ConflictKind::Advise {
+                            draft.advice_error = Some(e.to_string().chars().take(2000).collect());
+                            duet_workbench::conflict::save(&store, &draft)?;
+                        }
+                        let repo = Repository::open(store.directory().parent().unwrap())?;
+                        let body = duet_workbench::conflict::display(&repo, &draft, index, side)
+                            .unwrap_or_else(|e| e.to_string());
+                        app.mode = Mode::Conflict {
+                            draft,
+                            index,
+                            side,
+                            scroll: 0,
+                            body,
+                        };
+                    }
                 }
             }
             if let Some(preview) = app.requested_merge.take() {
                 let result = (|| -> Result<String> {
+                    ensure!(advisor.is_none(), "请先结束冲突 AI 分析");
                     ensure!(
                         coding.as_ref().is_none_or(|c| c.is_finished()),
                         "仍有活动编码，拒绝合并"
@@ -432,6 +639,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             }
             if let Some((id, confirmed_plan)) = app.requested_start.take() {
                 let result = (|| -> Result<CodingRun> {
+                    ensure!(advisor.is_none(), "请先 x 停止冲突顾问");
                     ensure!(
                         coding.as_ref().is_none_or(|c| c.is_finished()),
                         "请先暂停并退出当前执行；不能同时启动第二个编码会话"
@@ -542,6 +750,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
             }
             if let Some(prompt) = app.requested_task.take() {
+                if advisor.is_some() {
+                    app.status = "请先 x 停止冲突顾问再讨论新任务".into();
+                    continue;
+                }
                 let project = store
                     .directory()
                     .parent()
@@ -568,6 +780,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
             }
         }
+    }
+    if let Some(mut a) = advisor.take() {
+        a.stop()?;
+        app.agent_connected = false;
     }
     if let Some(coding) = &mut coding {
         coding.stop(&mut app, &mut store)?;

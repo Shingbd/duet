@@ -157,6 +157,7 @@ pub fn delete_selection(
             }
         }
     }
+    crate::conflict::archive_task(&source, store, &task.id, &backup)?;
     if selection.node_id.is_none() {
         source.remove_candidate(&worktree, &branch)?;
         store.remove_records(&task.id, None)?;

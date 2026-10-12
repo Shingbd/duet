@@ -164,22 +164,25 @@ impl Repository {
         delivery: &str,
         task: &str,
     ) -> Result<Snapshot> {
-        let output = self.git_output(&["merge-tree", "--write-tree", source, delivery], None)?;
+        let (tree, conflicts) = self.integration_tree(source, delivery)?;
         ensure!(
-            output.status.success(),
-            "集成冲突，主项目未变，请先处理候选：{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        let out = String::from_utf8(output.stdout)?;
-        let tree = out.lines().next().context("Git 未生成集成树")?;
-        ensure!(
-            tree.bytes().all(|b| b.is_ascii_hexdigit()) && matches!(tree.len(), 40 | 64),
-            "无效集成树"
+            conflicts.is_empty(),
+            "集成冲突，主项目未变：{}",
+            conflicts.join("、")
         );
         ensure!(
             tree != self.tree(source)?,
             "候选已包含在主项目或集成无差异，无需重复合并"
         );
+        self.integration_commit(&tree, source, delivery, task)
+    }
+    pub fn integration_commit(
+        &self,
+        tree: &str,
+        source: &str,
+        delivery: &str,
+        task: &str,
+    ) -> Result<Snapshot> {
         let commit = self
             .git(
                 &[
@@ -204,6 +207,67 @@ impl Repository {
             parent: Some(source.into()),
             reference: Some(reference),
         })
+    }
+    pub fn integration_tree(&self, source: &str, delivery: &str) -> Result<(String, Vec<String>)> {
+        let source = self.resolve_snapshot(source)?.commit;
+        let delivery = self.resolve_snapshot(delivery)?.commit;
+        let out = self.git_output(
+            &[
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "-z",
+                &source,
+                &delivery,
+            ],
+            None,
+        )?;
+        ensure!(
+            matches!(out.status.code(), Some(0 | 1)),
+            "无法构造集成树：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout)?;
+        let mut fields = stdout.split('\0');
+        let tree = fields.next().context("没有集成树")?.to_owned();
+        ensure!(
+            tree.bytes().all(|b| b.is_ascii_hexdigit()) && matches!(tree.len(), 40 | 64),
+            "无效集成树"
+        );
+        let mut paths = Vec::new();
+        if !out.status.success() {
+            for path in fields.take_while(|p| !p.is_empty()) {
+                validate_path(path)?;
+                paths.push(path.into());
+            }
+        }
+        ensure!(
+            out.status.success() || !paths.is_empty(),
+            "Git 返回失败但未列出冲突"
+        );
+        Ok((tree, paths))
+    }
+    pub fn create_worktree_at(&self, path: &Path, branch: &str, commit: &str) -> Result<()> {
+        let commit = self.resolve_snapshot(commit)?.commit;
+        self.git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                path.to_str().context("工作区路径不是 UTF-8")?,
+                &commit,
+            ],
+            None,
+        )?;
+        Ok(())
+    }
+    pub fn merge_base(&self, left: &str, right: &str) -> Result<Snapshot> {
+        self.resolve_snapshot(self.git(&["merge-base", left, right], None)?.trim())
+    }
+    pub fn snapshot_has_path(&self, snapshot: &Snapshot, path: &str) -> Result<bool> {
+        validate_path(path)?;
+        Ok(self.files(snapshot)?.iter().any(|p| p == path))
     }
     pub fn integration_diff(&self, source: &str, commit: &str) -> Result<String> {
         self.git(
@@ -327,6 +391,35 @@ impl Repository {
             }
         }
         self.git(&args, None)?;
+        Ok(())
+    }
+    pub fn archive_integration_refs(&self, id: &str, backup: &Path) -> Result<()> {
+        ensure!(
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()),
+            "不受管任务 ID"
+        );
+        let prefix = format!("refs/duet/integrations/{id}/");
+        let list = self.git(
+            &["for-each-ref", "--format=%(refname) %(objectname)", &prefix],
+            None,
+        )?;
+        let refs = list
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .collect::<Vec<_>>();
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec![
+            "bundle",
+            "create",
+            backup.to_str().context("备份路径不是 UTF-8")?,
+        ];
+        args.extend(refs.iter().map(|(r, _)| *r));
+        self.git(&args, None)?;
+        for (reference, commit) in refs {
+            self.git(&["update-ref", "-d", reference, commit], None)?;
+        }
         Ok(())
     }
     pub fn remove_checkpoint_refs(

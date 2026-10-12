@@ -108,6 +108,134 @@ fn fixture() -> (
     store.save_task(&task).unwrap();
     (dir, store, task, worktree)
 }
+
+fn setup_conflict() -> (
+    tempfile::TempDir,
+    WorkspaceStore,
+    TaskRecord,
+    Repository,
+    duet_workbench::conflict::Draft,
+) {
+    let (dir, store, task, _) = fixture();
+    fs::write(dir.path().join("one.txt"), "human one\n").unwrap();
+    commit(dir.path());
+    let repo = Repository::open(dir.path()).unwrap();
+    let duet_workbench::conflict::Preparation::Conflict(draft) =
+        duet_workbench::conflict::prepare(&repo, &store, &task, false).unwrap()
+    else {
+        panic!()
+    };
+    (dir, store, task, repo, draft)
+}
+#[test]
+fn conflict_resolution_keeps_source_and_candidate_immutable_until_final_confirmation() {
+    use duet_workbench::conflict;
+    let (dir, mut store, mut task, repo, mut draft) = setup_conflict();
+    let head = repo.baseline().unwrap().commit;
+    let index = fs::read(dir.path().join(".git/index")).unwrap();
+    assert_eq!(draft.conflicts, vec!["one.txt"]);
+    assert!(conflict::finish(&repo, &store, &task, &mut draft).is_err());
+    conflict::choose(&repo, &store, &task, &mut draft, 0, 1).unwrap();
+    assert_eq!(
+        conflict::load(&store, &task.id).unwrap().unwrap().resolved,
+        vec!["one.txt"]
+    );
+    let preview = conflict::finish(&repo, &store, &task, &mut draft).unwrap();
+    assert_eq!(repo.baseline().unwrap().commit, head);
+    assert_eq!(fs::read(dir.path().join(".git/index")).unwrap(), index);
+    merge::apply(&repo, &mut store, &mut task, &preview).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("one.txt")).unwrap(),
+        "human one\n"
+    );
+    assert_eq!(
+        fs::read_to_string(store.directory().join("worktrees/1001/one.txt")).unwrap(),
+        "approved one\n"
+    );
+}
+#[test]
+fn ai_conflict_description_and_patch_need_human_application_and_are_bound_to_version() {
+    use duet_workbench::{
+        conflict::{self, Advice, FileAdvice, Replacement},
+        conflict_ai,
+    };
+    let (dir, store, task, repo, mut draft) = setup_conflict();
+    let old = conflict::text(&repo, &draft, 0, 3).unwrap();
+    draft.advice = Some(Advice {
+        snapshot: draft.snapshot.clone(),
+        files: vec![FileAdvice {
+            snapshot: None,
+            path: "one.txt".into(),
+            description: "同名新增冲突".into(),
+            source_impact: "保留人工代码，丢失候选功能".into(),
+            candidate_impact: "保留候选，丢失人工代码".into(),
+            merge_impact: "保留双方，仍需验证".into(),
+            recommendation: "建议由人类选择合并双方".into(),
+            replacements: vec![Replacement {
+                old: old.clone(),
+                new: "human one\napproved one\n".into(),
+            }],
+        }],
+    });
+    conflict::save(&store, &draft).unwrap();
+    assert_eq!(conflict::text(&repo, &draft, 0, 3).unwrap(), old);
+    assert!(
+        conflict::display(&repo, &draft, 0, 4)
+            .unwrap()
+            .contains("同名新增")
+    );
+    assert!(draft.resolved.is_empty());
+    conflict_ai::apply(&repo, &store, &task, &mut draft, 0).unwrap();
+    assert_eq!(
+        conflict::text(&repo, &draft, 0, 3).unwrap(),
+        "human one\napproved one\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("one.txt")).unwrap(),
+        "human one\n"
+    );
+    assert!(conflict_ai::apply(&repo, &store, &task, &mut draft, 0).is_err());
+    let preview = conflict::finish(&repo, &store, &task, &mut draft).unwrap();
+    assert!(preview.diff.contains("approved one"));
+}
+#[test]
+fn conflict_drafts_reject_symlinks_and_stale_heads_and_rebuild_preserves_old_work() {
+    use duet_workbench::conflict::{self, Preparation};
+    let (dir, store, task, repo, mut draft) = setup_conflict();
+    let path = conflict::worktree(&store, &draft).unwrap().join("one.txt");
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("one.txt"), &path).unwrap();
+    assert!(conflict::choose(&repo, &store, &task, &mut draft, 0, 2).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, "manual work\n").unwrap();
+    fs::write(dir.path().join("new.txt"), "new head").unwrap();
+    commit(dir.path());
+    assert!(conflict::mark(&repo, &store, &task, &mut draft, 0).is_err());
+    let Preparation::Conflict(new) = conflict::prepare(&repo, &store, &task, true).unwrap() else {
+        panic!()
+    };
+    assert_ne!(new.nonce, draft.nonce);
+    assert_eq!(fs::read_to_string(path).unwrap(), "manual work\n");
+}
+
+#[test]
+fn task_cleanup_archives_owned_conflict_worktrees_without_touching_source() {
+    use duet_workbench::conflict;
+    let (dir, store, task, repo, draft) = setup_conflict();
+    let root = conflict::worktree(&store, &draft).unwrap();
+    let backup = store.directory().join("cleanup-test");
+    fs::create_dir(&backup).unwrap();
+    let head = repo.baseline().unwrap().commit;
+    conflict::archive_task(&repo, &store, &task.id, &backup).unwrap();
+    assert!(!root.exists());
+    assert!(backup.join("integrations.tar.gz").exists());
+    assert!(backup.join("integration-refs.bundle").exists());
+    assert_eq!(repo.baseline().unwrap().commit, head);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("one.txt")).unwrap(),
+        "human one\n"
+    );
+}
 #[test]
 fn merge_uses_approved_immutable_tree_preserves_candidate_and_never_runs_hooks() {
     let (dir, mut store, mut task, candidate) = fixture();

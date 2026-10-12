@@ -54,6 +54,18 @@ pub enum Mode {
     ConfirmDelete {
         selection: TaskSelection,
     },
+    Conflict {
+        draft: crate::conflict::Draft,
+        index: usize,
+        side: u8,
+        scroll: usize,
+        body: String,
+    },
+    ConfirmConflict {
+        draft: crate::conflict::Draft,
+        index: usize,
+        kind: ConflictKind,
+    },
     ConfirmRetry {
         task_id: String,
         failure: String,
@@ -68,6 +80,24 @@ pub enum Mode {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictKind {
+    View(u8),
+    Choose(u8),
+    Edit,
+    Mark,
+    Finish,
+    Rebuild,
+    Advise,
+    ApplyAI,
+    StopAdvisor,
+}
+#[derive(Debug, Clone)]
+pub struct ConflictRequest {
+    pub draft: crate::conflict::Draft,
+    pub index: usize,
+    pub kind: ConflictKind,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunControl {
     TogglePause,
@@ -131,6 +161,7 @@ pub struct App {
     pub requested_start: Option<(String, String)>,
     pub requested_delete: Option<TaskSelection>,
     pub planning_only: bool,
+    pub requested_conflict: Option<ConflictRequest>,
     pub requested_retry: Option<(String, String)>,
     pub requested_merge_preview: Option<String>,
     pub requested_merge: Option<crate::merge::MergePreview>,
@@ -238,6 +269,7 @@ impl App {
             requested_start: None,
             requested_delete: None,
             planning_only: true,
+            requested_conflict: None,
             requested_retry: None,
             requested_merge_preview: None,
             requested_merge: None,
@@ -917,6 +949,112 @@ impl App {
                     self.mode = Mode::Browse;
                 } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::Conflict {
+                draft,
+                index,
+                side,
+                scroll,
+                body,
+            } => {
+                let kind = match key.code {
+                    KeyCode::Esc => {
+                        self.mode = Mode::Browse;
+                        return;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        *scroll = scroll
+                            .saturating_add(1)
+                            .min(body.lines().count().saturating_sub(1));
+                        return;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        *scroll = scroll.saturating_sub(1);
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        *scroll = scroll
+                            .saturating_add(12)
+                            .min(body.lines().count().saturating_sub(1));
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        *scroll = scroll.saturating_sub(12);
+                        return;
+                    }
+                    KeyCode::Char(']') => {
+                        *index = (*index + 1).min(draft.conflicts.len().saturating_sub(1));
+                        ConflictKind::View(*side)
+                    }
+                    KeyCode::Char('[') => {
+                        *index = index.saturating_sub(1);
+                        ConflictKind::View(*side)
+                    }
+                    KeyCode::Char(c @ '0'..='4') => {
+                        *side = c as u8 - b'0';
+                        ConflictKind::View(*side)
+                    }
+                    KeyCode::Char('y') => ConflictKind::Advise,
+                    KeyCode::Char('o') => ConflictKind::Choose(1),
+                    KeyCode::Char('t') => ConflictKind::Choose(2),
+                    KeyCode::Char('a') => ConflictKind::ApplyAI,
+                    KeyCode::Char('e') => ConflictKind::Edit,
+                    KeyCode::Char('m') => ConflictKind::Mark,
+                    KeyCode::Char('r') => ConflictKind::Rebuild,
+                    KeyCode::Char('x') => ConflictKind::StopAdvisor,
+                    KeyCode::Enter => ConflictKind::Finish,
+                    _ => return,
+                };
+                if matches!(
+                    kind,
+                    ConflictKind::Choose(_)
+                        | ConflictKind::Advise
+                        | ConflictKind::ApplyAI
+                        | ConflictKind::Rebuild
+                ) {
+                    self.mode = Mode::ConfirmConflict {
+                        draft: draft.clone(),
+                        index: *index,
+                        kind,
+                    };
+                } else {
+                    self.requested_conflict = Some(ConflictRequest {
+                        draft: draft.clone(),
+                        index: *index,
+                        kind,
+                    });
+                }
+                return;
+            }
+            Mode::ConfirmConflict { draft, index, kind } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_conflict = Some(ConflictRequest {
+                        draft: draft.clone(),
+                        index: *index,
+                        kind: kind.clone(),
+                    });
+                    self.mode = Mode::Conflict {
+                        draft: draft.clone(),
+                        index: *index,
+                        side: 4,
+                        scroll: 0,
+                        body: String::new(),
+                    };
+                } else if key.code == KeyCode::Esc {
+                    self.requested_conflict = Some(ConflictRequest {
+                        draft: draft.clone(),
+                        index: *index,
+                        kind: ConflictKind::View(4),
+                    });
+                    self.mode = Mode::Conflict {
+                        draft: draft.clone(),
+                        index: *index,
+                        side: 4,
+                        scroll: 0,
+                        body: String::new(),
+                    };
                 }
                 return;
             }

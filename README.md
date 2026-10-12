@@ -17,6 +17,7 @@ Rust 本地 AI 协作工作台：任务、代码审核、项目与知识分区�
   workspace.lock    单实例项目锁
   sessions/         Pi 原始会话
   worktrees/        独立编码工作区
+  integrations/     冲突草稿、不可变版本与 AI 建议
 ```
 
 数据本地明文保存。默认被 Git 忽略，不修改项目根 .gitignore。不要提交或公开包含敏感信息的会话。当前一次只允许一个工作台打开同一数据目录；崩溃中的任务恢复为中断，不自动重跑。
@@ -103,6 +104,15 @@ AI 结果在独立 worktree，尚未合入主项目，所以不一定出现在�
 实际合并只使用批准的固定快照，不读取候选中的额外可变改动。生成保留主项目新提交的两父集成提交，再快进主分支；不自动测试、stash、push、部署或执行 Git hooks。验收失败、冲突、未批准版本、脏主项目、正在进行的 Git 操作、预览后 HEAD/分支/审批变化都会拒绝。自定义 merge driver/checkout filter、skip-worktree/assume-unchanged 暂不支持。
 合并前备份数据库、Git bundle 与确认信息；重启仅核对已确认合并的结果，不执行待合并意图。成功后任务显示“已合并”，`3` 更新到新 HEAD。保留候选/记录供追溯；已合并任务不能再次编码，后续改动新建任务。不要同时用外部工具修改主项目 Git。
 
+## 集成冲突：AI 描述，人类决定
+g 检测到冲突后建立独立集成草稿，不改主项目、不改原候选/批准版本。
+- **y → Enter**：AI 只读解释当前文件的冲突原因、双方目的、各方案收益/损失与推荐；可消耗额度并外发代码。AI 不能编辑、测试、批准或合并。x 停止；限额/错误保存并允许人类再次 y，不自动循环重试。
+- **[ / ]** 切文件；**4** 描述；**0 / 1 / 2 / 3** 看固定基线/主项目/候选/草稿；j/k、PageUp/Down 滚动。
+- **← o / → t / ◇ a → Enter**：人类明确选主项目、候选或 AI 建议。只修改独立草稿；AI 建议仅允许匹配对应固定文件的完整唯一冲突块，不能暗改块外内容，文件变化则拒绝。
+- **e** 打开本地编辑器备选（默认 vi，DUET_EDITOR 只接受单个可执行文件路径，不执行 shell 字符串）。**m** 捕获修改并确认此文件解决；未清除标记不能标记解决。
+- 全部 **✓** 后 **Enter** 生成新不可变最终 diff，再 Enter 进入风险确认，再 Enter 合并。文件选择、AI 推荐、标记解决都不是批准/合并/测试通过。
+主项目 HEAD/分支、任务/批准变化时禁止继续旧草稿；r 经确认另建新草稿，旧人工修复不被覆盖。进度/建议保存在私有 integrations JSON；重启 g 回到同一草稿，不启动 AI。删除任务/节点时相关草稿先归档再清理。当前按 UTF-8 文本文件处理；复杂/无法可靠建议的冲突需人工编辑，不是自动冲突求解器。测试 Runner 仍未接入。
+
 ## 删除与撤回
 在任务界面选择节点，按 `d`，Enter 确认：删除该节点及拓扑顺序中全部后续节点的记录/讨论/预览，并将候选 worktree 撤回到该节点开始前。先前节点保留。确认框明确提示连带范围，Esc 取消。
 选择任务根行按 `d`：删除整个任务、消息、节点、候选 worktree、分支及已知检查点引用。运行中的所选任务先停止；主项目、人工未提交文件和其他任务不变。私有 `.duet/backups/discard-*` 保留数据库、源码、Git bundle 与日志备份；删除不是取消，也不撤销已合并的主项目代码；已合并任务仅允许整任务清理记录/候选，节点撤回需另行处理 Git revert或模型仓外写入。
@@ -143,6 +153,7 @@ python3 scripts/node-smoke.py target/release/duet-workbench
 python3 scripts/task-controls-smoke.py target/release/duet-workbench
 python3 scripts/merge-smoke.py target/release/duet-workbench
 python3 scripts/retry-smoke.py target/release/duet-workbench
+python3 scripts/conflict-smoke.py target/release/duet-workbench
 ```
 
 Unix 假 RPC 和 PTY 测试需要 Python 3。自动测试不调用真实模型。
@@ -165,7 +176,7 @@ python3 scripts/performance-probe.py target/debug/duet-workbench target/release/
 ## 当前边界
 
 已具备受控手动任务的第一条编码链路，不是完整自主多 Agent 平台。
-节点契约、只读拆分、顺序执行、节点审核与任务历史导航已实现；90 项自动测试、严格 clippy 与 release PTY 验证通过。新节点流水线以假 RPC 验证，尚未完成新的真实模型端到端验证。
+节点契约、只读拆分、顺序执行、节点审核与任务历史导航已实现；94 项自动测试、严格 clippy 与 release PTY 验证通过。新节点流水线以假 RPC 验证，尚未完成新的真实模型端到端验证。
 待实现：验证 Runner、独立审查、固定版本验证证据、原 Pi 会话/队列恢复、任意历史节点返工、后台启动与按需 AI 教学。
 浏览暂载入前 80 个文件，每文件 1 MiB；没有完整 IDE 编辑、语法高亮或系统级沙箱。
 详见 `docs/phase-1.md`。
