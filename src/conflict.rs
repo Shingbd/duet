@@ -29,6 +29,8 @@ pub struct Draft {
     #[serde(default)]
     pub extra_paths: Vec<String>,
     #[serde(default)]
+    pub lockfile_pending: bool,
+    #[serde(default)]
     pub advice: Option<Advice>,
     #[serde(default)]
     pub advice_error: Option<String>,
@@ -158,7 +160,20 @@ pub fn prepare(
     merge::validate_delivery(repo, task)?;
     store.candidate(&task.id)?;
     repo.merge_guard()?;
-    if !rebuild && let Some(draft) = load(store, &task.id)? {
+    if !rebuild && let Some(mut draft) = load(store, &task.id)? {
+        let candidate = identity(repo, store, &draft)?;
+        let lock = safe_file(candidate.root(), "Cargo.lock")?;
+        let source = repo.resolve_snapshot(&draft.source_head)?;
+        let old = if repo.snapshot_has_path(&source, "Cargo.lock")? {
+            Some(repo.read(&source, "Cargo.lock")?.into_bytes())
+        } else {
+            None
+        };
+        draft.lockfile_pending = if lock.exists() {
+            Some(fs::read(lock)?) != old
+        } else {
+            old.is_some()
+        };
         return Ok(Preparation::Conflict(draft));
     }
     let head = repo.baseline()?.commit;
@@ -190,6 +205,7 @@ pub fn prepare(
         conflicts,
         resolved: Vec::new(),
         extra_paths: Vec::new(),
+        lockfile_pending: false,
         advice: None,
         advice_error: None,
     };
@@ -255,35 +271,74 @@ pub fn validate(
     );
     identity(repo, store, draft)
 }
+impl Draft {
+    pub fn all_resolved(&self) -> bool {
+        self.conflicts.iter().all(|p| self.resolved.contains(p))
+    }
+    pub fn needs_lockfile_permission(&self) -> bool {
+        self.lockfile_pending && !self.extra_paths.iter().any(|p| p == "Cargo.lock")
+    }
+    pub fn next_step(&self) -> &'static str {
+        if self.needs_lockfile_permission() {
+            "▶ l → Enter：允许更新依赖版本清单 Cargo.lock"
+        } else if self.all_resolved() {
+            "▶ Enter：查看最终改动（还不会合入）"
+        } else {
+            "▶ y → Enter：先让 AI 解释当前文件，再由你选方案"
+        }
+    }
+}
 pub fn display(repo: &Repository, draft: &Draft, index: usize, side: u8) -> Result<String> {
     let path = draft.conflicts.get(index).context("冲突文件不存在")?;
     if side != 4 {
         return text(repo, draft, index, side);
     }
-    let mut info = String::new();
-    if !draft.extra_paths.is_empty() {
-        info.push_str("◇ 已明确授权额外集成范围 Cargo.lock（节点批准未改，仍需审核最终 diff）\n");
+    let resolved = draft.resolved.contains(path);
+    let mut info = if resolved {
+        "✓ 这个文件已标记处理，不必重新选主项目或 AI 候选。\n\n3 查看修复后的固定代码；最终以整任务 diff 为准。\n".to_owned()
+    } else {
+        "⚠ 双方改到了同一处，Git 不知道该保留哪边，需要你决定。\n".to_owned()
+    };
+    if draft.needs_lockfile_permission() {
+        info.push_str("\n还需你确认：Cargo.lock\n这是依赖版本清单，本次草稿改了它，但它不在原节点批准范围。\nl → Enter 只允许这项更新，不代表合入主项目，也不会运行测试。\n");
+    } else if !draft.extra_paths.is_empty() {
+        info.push_str("\n✓ 已允许更新 Cargo.lock，仍需审阅最终 diff。\n");
     }
     if let Some(error) = &draft.advice_error {
-        info.push_str(&format!("⚠ AI 分析失败：{error}\n"));
+        info.push_str(&format!("\n⚠ 上次 AI 分析未完成：{error}\n"));
     }
     if let Some(advice) = draft
         .advice
         .as_ref()
         .and_then(|a| a.files.iter().find(|f| &f.path == path))
     {
-        info.push_str(&format!("冲突原因\n{}\n\n← 主项目\n{}\n\n→ 候选\n{}\n\n◇ 建议合并\n{}\n\nAI 推荐（不是决定）\n{}\n\n建议替换块：{}；a 确认才应用，最终仍需审核 diff。",advice.description,advice.source_impact,advice.candidate_impact,advice.merge_impact,advice.recommendation,advice.replacements.len()));
-        for (i, patch) in advice.replacements.iter().enumerate() {
-            info.push_str(&format!("\n\n◇ 建议块 {}（尚未应用）\n", i + 1));
-            for line in patch.old.lines() {
-                info.push_str(&format!("- {line}\n"));
-            }
-            for line in patch.new.lines() {
-                info.push_str(&format!("+ {line}\n"));
+        if resolved {
+            info.push_str(&format!(
+                "\n修复说明（参考，不代替代码审阅）\n{}\n",
+                advice.merge_impact
+            ));
+        } else {
+            info.push_str(&format!("\n为什么不能直接合入？\n{}\n\n选 o：只保留主项目，会怎样？\n{}\n\n选 t：只保留 AI 候选，会怎样？\n{}\n\n结合双方，会怎样？\n{}\n\nAI 的建议（由你决定）\n{}\n",advice.description,advice.source_impact,advice.candidate_impact,advice.merge_impact,advice.recommendation));
+            if advice.replacements.is_empty() {
+                info.push_str("\nAI 没有提供可直接应用的代码方案。可选 o / t，或 e → Enter 手动编辑；不要按 a。\n");
+            } else {
+                info.push_str("\na → Enter 才会把下列建议写入独立草稿，不会合入主项目。\n");
+                for (i, patch) in advice.replacements.iter().enumerate() {
+                    info.push_str(&format!("\n建议代码 {}（尚未应用）\n", i + 1));
+                    for line in patch.old.lines() {
+                        info.push_str(&format!("- {line}\n"));
+                    }
+                    for line in patch.new.lines() {
+                        info.push_str(&format!("+ {line}\n"));
+                    }
+                }
             }
         }
-    } else {
-        info.push_str("y ▶ 请求 AI 只读解释此文件的冲突与选择影响（需确认）\n\n← o 主项目    → t 候选    ◇ a AI 建议    e 手动编辑\n没有任何方案被自动应用。");
+    } else if !resolved {
+        info.push_str("\ny → Enter 让 AI 只读解释双方修改与选择影响。\n没有方案会被自动应用。\n");
+    }
+    if resolved && draft.all_resolved() {
+        info.push_str("\n接下来：查看最终 diff → 审阅 → 确认风险 → 明确合入。\n现在主项目未变，已处理不等于测试通过。\n");
     }
     Ok(info)
 }

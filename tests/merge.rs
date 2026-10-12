@@ -259,6 +259,51 @@ fn lockfile_is_separately_authorized_without_changing_approved_nodes() {
     assert_eq!(task.nodes, node_before);
 }
 #[test]
+fn conflict_reading_distinguishes_finished_repairs_from_pending_decisions() {
+    use duet_workbench::conflict;
+    let (_dir, store, task, repo, mut draft) = setup_conflict();
+    assert!(draft.next_step().contains("y"));
+    let unresolved = conflict::display(&repo, &draft, 0, 4).unwrap();
+    assert!(unresolved.contains("需要你决定"));
+    assert!(!unresolved.contains("建议替换块"));
+    conflict::choose(&repo, &store, &task, &mut draft, 0, 1).unwrap();
+    let resolved = conflict::display(&repo, &draft, 0, 4).unwrap();
+    assert!(draft.all_resolved());
+    assert!(draft.next_step().contains("查看最终改动"));
+    assert!(resolved.contains("不必重新选"));
+    assert!(!resolved.contains("尚未应用"));
+    assert!(resolved.contains("已处理不等于测试通过"));
+}
+#[test]
+fn opening_draft_detects_pending_lockfile_without_authorizing_or_capturing_it() {
+    use duet_workbench::conflict::{self, Preparation};
+    let (_dir, store, task, repo, draft) = setup_conflict();
+    let original = draft.snapshot.clone();
+    fs::write(
+        conflict::worktree(&store, &draft)
+            .unwrap()
+            .join("Cargo.lock"),
+        "prepared dependency versions\n",
+    )
+    .unwrap();
+    let Preparation::Conflict(mut reopened) =
+        conflict::prepare(&repo, &store, &task, false).unwrap()
+    else {
+        panic!()
+    };
+    assert!(reopened.needs_lockfile_permission());
+    assert!(reopened.next_step().contains("l → Enter"));
+    assert_eq!(reopened.snapshot, original);
+    assert!(reopened.extra_paths.is_empty());
+    assert!(
+        conflict::display(&repo, &reopened, 0, 4)
+            .unwrap()
+            .contains("依赖版本清单")
+    );
+    reopened.extra_paths.push("Cargo.lock".into());
+    assert!(!reopened.needs_lockfile_permission());
+}
+#[test]
 fn merge_uses_approved_immutable_tree_preserves_candidate_and_never_runs_hooks() {
     let (dir, mut store, mut task, candidate) = fixture();
     let repo = Repository::open(dir.path()).unwrap();

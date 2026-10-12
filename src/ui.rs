@@ -309,53 +309,100 @@ fn draw_cached(frame: &mut Frame, app: &App, cache: &mut ReaderCache) {
             body,
         } => {
             let height = frame.area().height.saturating_sub(4);
+            let done = draft.all_resolved();
+            let good = Style::default().fg(theme.good).add_modifier(Modifier::BOLD);
+            let accent = Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD);
+            let muted = Style::default().fg(theme.muted);
             let mut lines = vec![
-                Line::from("y ▶ AI 描述（需确认） · 4 描述 · 0 基线 / 1 主项目 / 2 候选 / 3 草稿"),
-                Line::from(
-                    "← o 主项目 · → t 候选 · ◇ a 建议 · e 编辑 · m 解决 · l 锁文件授权 · x 停止 AI",
-                ),
-                Line::from("[ / ] 文件 · j/k 滚动 · Enter 最终 diff · r 新草稿 · Esc 返回"),
+                Line::from(Span::styled(
+                    if done {
+                        format!(
+                            "✓ {} 个文件已标记处理 · 等你审阅，尚未合入",
+                            draft.conflicts.len()
+                        )
+                    } else {
+                        format!(
+                            "⚠ 还有 {} 个文件待处理",
+                            draft
+                                .conflicts
+                                .iter()
+                                .filter(|p| !draft.resolved.contains(p))
+                                .count()
+                        )
+                    },
+                    if done {
+                        good
+                    } else {
+                        Style::default().fg(theme.warning)
+                    },
+                )),
+                Line::from(Span::styled(draft.next_step(), accent)),
+                Line::from(Span::styled(
+                    if done {
+                        "无需再选 o / t / a；Enter 只打开最终 diff，合入还有单独确认。"
+                    } else {
+                        "AI 只解释，不替你决定；o / t / a 经 Enter 确认才改草稿。"
+                    },
+                    muted,
+                )),
+                Line::from(""),
             ];
             if let Some(path) = draft.conflicts.get(*index) {
-                lines.insert(
-                    0,
-                    Line::from(format!(
-                        "{} {} · {}/{} · {}/{} ✓",
-                        if draft.resolved.contains(path) {
-                            "✓"
-                        } else {
-                            "⚠"
-                        },
-                        safe_text(path),
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "文件 {}/{}：{}  {}",
                         index + 1,
                         draft.conflicts.len(),
-                        draft.resolved.len(),
-                        draft.conflicts.len()
-                    )),
-                );
+                        safe_text(path),
+                        if draft.resolved.contains(path) {
+                            "✓ 已处理"
+                        } else {
+                            "⚠ 待决定"
+                        }
+                    ),
+                    accent,
+                )));
             }
-            lines.push(Line::from(format!(
-                "{} · 工作区：.duet/integrations/{}/{}/worktree",
+            lines.push(Line::from(Span::styled(
                 match side {
-                    0 => "基线",
-                    1 => "主项目",
-                    2 => "候选",
-                    3 => "固定草稿",
-                    _ => "AI 描述",
+                    0 => "旧基线代码",
+                    1 => "现在主项目的代码",
+                    2 => "AI 交付的代码",
+                    3 => "已准备的固定草稿代码",
+                    _ => "说明与下一步",
                 },
-                draft.task_id,
-                draft.nonce
+                muted,
             )));
+            lines.push(Line::from(""));
             lines.extend(
                 body.lines()
                     .skip(*scroll)
-                    .take(height.saturating_sub(8) as usize)
+                    .take(height.saturating_sub(14) as usize)
                     .map(|l| Line::from(safe_text(l))),
             );
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "[ / ] 切文件 · j/k 滚动 · 3 看代码 / 4 看说明 · Esc 返回",
+                muted,
+            )));
+            lines.push(Line::from(Span::styled(
+                if done {
+                    "其他操作：y 重新分析 · e 编辑 · m 标记处理 · r 另建草稿 · x 停止 AI"
+                } else {
+                    "选方案：o 主项目 / t AI候选 / a AI建议 · e 编辑 · m 标记处理 · x 停止AI"
+                },
+                muted,
+            )));
             popup(
                 frame,
                 theme,
-                " ⚠ 集成冲突 · 主项目未变 ",
+                if done {
+                    " 修复已准备 · 等待你审阅 "
+                } else {
+                    " 选择如何处理 · 主项目未变 "
+                },
                 lines,
                 140,
                 height,
