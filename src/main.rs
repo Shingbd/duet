@@ -28,6 +28,8 @@ struct Cli {
     #[arg(long, global = true)]
     keymap: Option<PathBuf>,
     #[arg(long, global = true)]
+    helix: Option<PathBuf>,
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[arg(long, global = true, value_enum)]
     language: Option<Language>,
@@ -136,6 +138,13 @@ fn main() -> Result<()> {
     }
     if let Some(theme) = cli.theme {
         config.theme = theme;
+    }
+    if let Some(helix) = cli.helix {
+        config.helix_path = if helix.is_absolute() || helix.components().count() == 1 {
+            helix
+        } else {
+            std::env::current_dir()?.join(helix)
+        };
     }
     if let Some(keymap) = cli.keymap {
         config.keymap_file = Some(keymap);
@@ -319,7 +328,52 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut save_since: Option<Instant> = None;
     let mut last_input = Instant::now();
     let mut advisor: Option<duet_workbench::conflict_ai::Advisor> = None;
+    let mut editor: Option<duet_workbench::editing::Session> = None;
     loop {
+        if let Some(session) = &mut editor {
+            let size = terminal.size()?;
+            let (rows, cols) = ui::editor_size(
+                ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                app.fullscreen,
+            );
+            let activity = session
+                .terminal
+                .resize(rows, cols)
+                .and_then(|changed| session.terminal.poll().map(|data| changed || data));
+            match activity {
+                Ok(changed) => {
+                    if changed {
+                        app.editor_screen = Some(session.terminal.screen().clone());
+                        redraw = true;
+                    }
+                }
+                Err(error) => {
+                    app.status = format!("内嵌编辑器通信失败：{error}；已保存改动保留");
+                    let _ = session.terminal.stop();
+                }
+            }
+            if let Some(status) = session.terminal.exit_status() {
+                let session = editor.take().unwrap();
+                app.editor_screen = None;
+                app.editor_focused = false;
+                if let Err(error) = duet_workbench::editing::finish(
+                    session.target,
+                    status.success(),
+                    &mut app,
+                    &store,
+                ) {
+                    app.status = format!(
+                        "编辑器已退出，固定版本捕获未完成：{error}；草稿/备份保留，不会自动批准或合入"
+                    );
+                }
+                redraw = true;
+            }
+        }
+        if app.quit && editor.is_some() {
+            app.quit = false;
+            app.mode = Mode::ConfirmStopEditor;
+            redraw = true;
+        }
         if let Some(a) = &mut advisor {
             let result = a.poll();
             app.run = a.state.clone();
@@ -410,7 +464,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         if app.quit {
             break;
         }
-        let wait = if advisor.is_some()
+        let wait = if editor.is_some()
+            || advisor.is_some()
             || coding.as_ref().is_some_and(|run| !run.is_finished())
                 && app.run.status != duet_workbench::rpc::RunStatus::Paused
         {
@@ -424,6 +479,25 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             // Drain queued input before drawing so key repeats/pastes don't queue frames.
             for _ in 0..64 {
                 match event::read()? {
+                    Event::Key(key) if app.editor_focused && editor.is_some() => {
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                            && key.code == crossterm::event::KeyCode::Char(']')
+                        {
+                            app.editor_focused = false;
+                            app.status =
+                                "焦点回 Duet · h 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
+                                    .into();
+                        } else if let Err(error) = editor.as_mut().unwrap().terminal.key(key) {
+                            app.status = error.to_string();
+                        }
+                    }
+                    Event::Paste(text) if app.editor_focused && editor.is_some() => {
+                        if let Err(error) = editor.as_mut().unwrap().terminal.paste(&text) {
+                            app.status = error.to_string();
+                        }
+                    }
                     Event::Key(key) => app.handle_key(key),
                     Event::Paste(text) => {
                         if let Mode::Input { text: input, .. } | Mode::Message { text: input } =
@@ -441,6 +515,64 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             last_input = Instant::now();
             redraw = true;
             save_since.get_or_insert(last_input);
+            if std::mem::take(&mut app.requested_editor_stop)
+                && let Some(mut session) = editor.take()
+            {
+                app.requested_editor_stop = false;
+                session.terminal.stop()?;
+                app.editor_screen = None;
+                app.editor_focused = false;
+                if let Err(error) =
+                    duet_workbench::editing::finish(session.target, false, &mut app, &store)
+                {
+                    app.status = format!("编辑器停止，改动保留，捕获未完成：{error}");
+                }
+            }
+            if let Some(selection) = app.requested_editor.take() {
+                let result = (|| -> Result<()> {
+                    ensure!(editor.is_none(), "编辑器已在运行，h 返回");
+                    ensure!(
+                        advisor.is_none() && coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "请先结束 AI 执行；人工编辑与模型写入互斥"
+                    );
+                    let size = terminal.size()?;
+                    let (rows, cols) = ui::editor_size(
+                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        app.fullscreen,
+                    );
+                    let session =
+                        duet_workbench::editing::start(selection, &mut app, &store, rows, cols)?;
+                    app.editor_screen = Some(session.terminal.screen().clone());
+                    editor = Some(session);
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    app.status = format!("未打开内嵌 Helix：{error}");
+                }
+            }
+            if editor.is_some()
+                && (app.requested_delete.is_some()
+                    || app.requested_start.is_some()
+                    || app.requested_retry.is_some()
+                    || app.requested_merge_preview.is_some()
+                    || app.requested_merge.is_some()
+                    || app.requested_task.is_some()
+                    || !app.controls.is_empty()
+                    || app.requested_conflict.is_some()
+                    || app.cancel_requested)
+            {
+                app.requested_delete = None;
+                app.requested_start = None;
+                app.requested_retry = None;
+                app.requested_merge_preview = None;
+                app.requested_merge = None;
+                app.requested_task = None;
+                app.controls.clear();
+                app.requested_conflict = None;
+                app.cancel_requested = false;
+                app.status =
+                    "Helix 仍在运行：h 返回，用 :wq 保存退出后再启动 AI、处理草稿或合入".into();
+            }
             if std::mem::take(&mut app.cancel_requested)
                 && let Some(coding) = &mut coding
             {

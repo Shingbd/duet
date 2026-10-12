@@ -540,6 +540,59 @@ pub fn archive_task(
     fs::remove_dir_all(dir)?;
     Ok(())
 }
+/// Manual edits from review are integration revisions, never a mutation of approved node snapshots.
+pub fn prepare_edit(
+    repo: &Repository,
+    store: &WorkspaceStore,
+    task: &TaskRecord,
+    path: &str,
+) -> Result<Draft> {
+    validate_path(path)?;
+    ensure!(
+        task.nodes.iter().any(|n| n.contract.contains_path(path)),
+        "文件不在任务授权范围"
+    );
+    let mut draft = match prepare(repo, store, task, false)? {
+        Preparation::Conflict(draft) => draft,
+        Preparation::Preview(preview) => {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_nanos()
+                .to_string();
+            let dir = directory(store, &task.id)?;
+            private_dir(&dir.join(&nonce))?;
+            let draft = Draft {
+                task_id: task.id.clone(),
+                signature: signature(task)?,
+                source_head: preview.source_head.clone(),
+                source_branch: preview.branch,
+                delivery: preview.delivery.clone(),
+                base: repo
+                    .merge_base(&preview.source_head, &preview.delivery)?
+                    .commit,
+                initial: preview.commit.clone(),
+                snapshot: preview.commit,
+                nonce: nonce.clone(),
+                branch: format!("duet/integration-{}-{}", task.id, nonce),
+                conflicts: Vec::new(),
+                resolved: Vec::new(),
+                extra_paths: Vec::new(),
+                lockfile_pending: false,
+                advice: None,
+                advice_error: None,
+            };
+            repo.create_worktree_at(&worktree(store, &draft)?, &draft.branch, &draft.initial)?;
+            draft
+        }
+    };
+    validate(repo, store, task, &draft)?;
+    if !draft.conflicts.iter().any(|p| p == path) {
+        draft.conflicts.push(path.into());
+    }
+    draft.resolved.retain(|p| p != path);
+    save(store, &draft)?;
+    Ok(draft)
+}
 pub fn finish(
     repo: &Repository,
     store: &WorkspaceStore,

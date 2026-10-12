@@ -61,6 +61,17 @@ Defaults are shipped in [`duet.default.json`](duet.default.json). This repositor
 
 Preferences include language (`zh-CN` / partial `en`), theme, initial view, keymap, editor, Pi executable/model, execution budget, and UI polling/save delays. Precedence: built-in → user-global → project's `duet.json` → `--config` → CLI overrides. Preferences never grant model/write/merge permission. See the [configuration guide](docs/configuration.md) for paths, validation, and language coverage.
 
+## Embedded Helix
+
+Helix can run **inside the code/diff panel** using a real Unix PTY, without leaving Duet. Install `hx` with its runtime, or set `helix_path` / use `--helix /path/to/hx`.
+
+- **h → Enter** opens the selected target; **Ctrl+]** returns focus to Duet, **h** returns to Helix.
+- **:wq → Enter** saves/exits. No automatic commit, approval, model call, or merge.
+- Project code edits actual main files after backup. Review editing currently requires a fully approved, unmerged task and creates a separate integration revision, not a mutation of its node snapshots.
+- Editing/advisory/model write workflows cannot run concurrently. First release is Unix/keyboard-only; mouse/clipboard protocol passthrough and pending-node rework are not implemented.
+
+See [embedded Helix](docs/helix.md) for target semantics, safety, and real-editor PTY tests.
+
 ## The workflow
 
 ```text
@@ -155,6 +166,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 
 ## Documentation
 
+- [Embedded Helix — bilingual](docs/helix.md)
 - [Configuration reference — bilingual](docs/configuration.md)
 - [Detailed operating guide — Chinese](docs/user-guide.zh-CN.md)
 - [Task and node contracts](docs/nodes.md)

@@ -88,6 +88,7 @@ pub struct Config {
     pub default_view: DefaultView,
     pub keymap_file: Option<PathBuf>,
     pub editor: PathBuf,
+    pub helix_path: PathBuf,
     pub agent: AgentConfig,
     pub performance: Performance,
 }
@@ -100,6 +101,7 @@ impl Default for Config {
             default_view: DefaultView::Restore,
             keymap_file: None,
             editor: "vi".into(),
+            helix_path: "hx".into(),
             agent: AgentConfig::default(),
             performance: Performance::default(),
         }
@@ -131,7 +133,7 @@ impl Config {
             (self.performance.save_delay_ms..=10000).contains(&self.performance.save_max_delay_ms),
             "save_max_delay_ms must be >= save_delay_ms and <= 10000"
         );
-        for path in [&self.agent.pi_path, &self.editor] {
+        for path in [&self.agent.pi_path, &self.editor, &self.helix_path] {
             ensure!(
                 !path.as_os_str().is_empty()
                     && !path.to_string_lossy().chars().any(char::is_control),
@@ -241,7 +243,7 @@ fn merge_file(target: &mut Value, path: &Path) -> Result<()> {
         std::env::current_dir()?.join(path)
     };
     let base = absolute.parent().context("Config has no parent")?;
-    for pointer in ["/keymap_file", "/editor", "/agent/pi_path"] {
+    for pointer in ["/keymap_file", "/editor", "/agent/pi_path", "/helix_path"] {
         if let Some(field) = value.pointer_mut(pointer)
             && let Some(text) = field.as_str()
         {

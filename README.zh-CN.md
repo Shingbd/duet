@@ -61,6 +61,17 @@ cargo build --release
 
 可配置语言（`zh-CN` / 部分英文 `en`）、主题、初始视图、快捷键、编辑器、Pi 路径/模型、执行预算和界面轮询/保存延迟。优先级：内置默认 → 用户全局 → 项目 `duet.json` → `--config` → 命令行参数。配置不代替模型、写入或合入授权。路径、校验和语言覆盖范围见[配置说明](docs/configuration.md)。
 
+## 框内 Helix 编辑
+
+Helix 通过真实 Unix PTY **运行在代码/diff 框内**，无需离开工作台。安装包含 runtime 的 `hx`，或配置 `helix_path` / 使用 `--helix /path/to/hx`。
+
+- **h → Enter** 打开所选目标；**Ctrl+]** 回到 Duet，**h** 回到 Helix。
+- **:wq → Enter** 保存退出，不自动提交、批准、调用模型或合入。
+- 项目代码编辑实际主文件，先备份；审核编辑目前要求任务全部批准且尚未合入，生成独立集成修复版本，不修改节点快照。
+- 人工编辑与 AI/集成写入互斥。首版仅 Unix/键盘，暂不支持内嵌鼠标/剪贴板协议透传或待审节点直接返工。
+
+实际编辑目标、安全边界和真实编辑器 PTY 验证见[Helix 说明](docs/helix.md)。
+
 ## 从需求到合入
 
 ```text
@@ -155,6 +166,7 @@ python3 scripts/merge-smoke.py target/release/duet-workbench
 
 ## 更多文档
 
+- [内嵌 Helix（中英）](docs/helix.md)
 - [配置说明（中英）](docs/configuration.md)
 - [详细操作指南](docs/user-guide.zh-CN.md)
 - [任务与节点契约](docs/nodes.md)

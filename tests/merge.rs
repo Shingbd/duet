@@ -304,6 +304,31 @@ fn opening_draft_detects_pending_lockfile_without_authorizing_or_capturing_it() 
     assert!(!reopened.needs_lockfile_permission());
 }
 #[test]
+fn manual_review_edits_become_integration_revisions_not_node_reapprovals() {
+    use duet_workbench::conflict;
+    let (dir, store, task, candidate) = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    let nodes = task.nodes.clone();
+    let original = fs::read_to_string(candidate.join("one.txt")).unwrap();
+    let mut draft = conflict::prepare_edit(&repo, &store, &task, "one.txt").unwrap();
+    assert_eq!(draft.conflicts, vec!["one.txt"]);
+    assert!(draft.resolved.is_empty());
+    fs::write(
+        conflict::worktree(&store, &draft).unwrap().join("one.txt"),
+        "human integration repair\n",
+    )
+    .unwrap();
+    conflict::mark(&repo, &store, &task, &mut draft, 0).unwrap();
+    let preview = conflict::finish(&repo, &store, &task, &mut draft).unwrap();
+    assert!(preview.diff.contains("human integration repair"));
+    assert_eq!(task.nodes, nodes);
+    assert_eq!(
+        fs::read_to_string(candidate.join("one.txt")).unwrap(),
+        original
+    );
+    assert!(!dir.path().join("one.txt").exists());
+}
+#[test]
 fn merge_uses_approved_immutable_tree_preserves_candidate_and_never_runs_hooks() {
     let (dir, mut store, mut task, candidate) = fixture();
     let repo = Repository::open(dir.path()).unwrap();

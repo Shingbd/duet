@@ -333,7 +333,7 @@ fn draw_cached(
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
 format!(
-                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
+                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助 · {} Helix",
                     if app.view == View::Review {
                         format!(
                             "{} 批准 · 自动实时预览 · {} 合并 · {} 删除 · ",
@@ -358,7 +358,7 @@ format!(
                     app.keymap.hint(Action::Fullscreen),
                     app.keymap.hint(Action::MarkRead),
                     app.keymap.hint(Action::Palette),
-                    app.keymap.hint(Action::Help)
+                    app.keymap.hint(Action::Help),app.keymap.hint(Action::EmbeddedEditor)
                 )
                 },
                 Style::default().fg(theme.muted),
@@ -368,6 +368,49 @@ format!(
     );
 
     match &app.mode {
+        Mode::ConfirmEmbeddedEditor { selection } => {
+            let target = match selection {
+                crate::embedded::Selection::Project { .. } => {
+                    "将编辑主项目实际工作文件（可能含未提交内容），不是只读快照；先备份，不自动提交。"
+                }
+                crate::embedded::Selection::Review { .. } => {
+                    "仅支持已全部批准的任务：编辑最终集成草稿，不覆盖所示历史节点/原候选；旧批准不批准此新修复。"
+                }
+                crate::embedded::Selection::Conflict { .. } => {
+                    "仅编辑独立集成草稿，不修改主项目或原候选；退出后捕获新快照，仍需最终审阅。"
+                }
+            };
+            popup(
+                frame,
+                theme,
+                " 内嵌 Helix · 明确授权 ",
+                vec![
+                    Line::from(safe_text(selection.path())),
+                    Line::from(target),
+                    Line::from(
+                        "Helix 具有当前账号权限，可打开其他文件/调用其配置工具；PTY/worktree 不是 OS 沙箱。",
+                    ),
+                    Line::from(
+                        "Ctrl+] 切回 Duet · h 回 Helix · :wq 保存退出 · Enter 启动 / Esc 取消",
+                    ),
+                ],
+                110,
+                10,
+            );
+        }
+        Mode::ConfirmStopEditor => popup(
+            frame,
+            theme,
+            " 停止内嵌编辑器？ ",
+            vec![
+                Line::from(
+                    "编辑器仍在运行。Enter 终止进程组；未保存缓冲区会丢失，已保存文件不会回滚。",
+                ),
+                Line::from("Esc 取消，再 h 回编辑器用 :wq 正常保存退出。"),
+            ],
+            100,
+            7,
+        ),
         Mode::Help => {
             let lines: Vec<Line> = app
                 .keymap
@@ -537,9 +580,9 @@ format!(
             )));
             lines.push(Line::from(Span::styled(
                 if done {
-                    "其他操作：y 重新分析 · e 编辑 · m 标记处理 · r 另建草稿 · x 停止 AI"
+                    "其他操作：h 内嵌 Helix · y 分析 · e 外部编辑 · m 标记处理 · r 另建草稿 · x 停止 AI"
                 } else {
-                    "选方案：o 主项目 / t AI候选 / a AI建议 · e 编辑 · m 标记处理 · x 停止AI"
+                    "选方案：o 主项目 / t AI候选 / a AI建议 · h Helix / e 外部编辑 · m 标记处理 · x 停止AI"
                 },
                 muted,
             )));
@@ -1604,7 +1647,91 @@ pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+pub fn editor_size(area: Rect, fullscreen: bool) -> (u16, u16) {
+    let body_height = area.height.saturating_sub(6);
+    let width = if fullscreen || area.width < 78 {
+        area.width
+    } else if area.width < 116 {
+        area.width.saturating_sub(25)
+    } else {
+        area.width.saturating_sub(60)
+    };
+    (
+        body_height.saturating_sub(2).clamp(1, 200),
+        width.saturating_sub(2).clamp(1, 400),
+    )
+}
+fn editor_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+fn render_editor(
+    frame: &mut Frame,
+    screen: &vt100::Screen,
+    area: Rect,
+    focused: bool,
+    theme: Theme,
+) {
+    let block = theme.block(
+        if focused {
+            " HELIX · Ctrl+] → Duet · :wq 保存退出 "
+        } else {
+            " HELIX · h 回编辑器 "
+        },
+        focused,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (rows, cols) = screen.size();
+    for row in 0..inner.height.min(rows) {
+        for col in 0..inner.width.min(cols) {
+            let Some(cell) = screen.cell(row, col) else {
+                continue;
+            };
+            let mut style = Style::default()
+                .fg(editor_color(cell.fgcolor()))
+                .bg(editor_color(cell.bgcolor()));
+            if cell.bold() {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if cell.italic() {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if cell.underline() {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if cell.inverse() {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let text = cell.contents();
+            let text = if text.is_empty() || cell.is_wide_continuation() {
+                " "
+            } else if cell.is_wide() && col + 1 >= inner.width {
+                "?"
+            } else {
+                &text
+            };
+            if let Some(target) = frame.buffer_mut().cell_mut((inner.x + col, inner.y + row)) {
+                target.set_symbol(text).set_style(style);
+            }
+        }
+    }
+    if focused && !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        if row < inner.height && col < inner.width {
+            frame.set_cursor_position((inner.x + col, inner.y + row));
+        }
+    }
+}
+
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
+    if let Some(screen) = &app.editor_screen {
+        render_editor(frame, screen, area, app.editor_focused, theme);
+        return;
+    }
     cache.prepare(app, area.width.saturating_sub(2));
     let scroll = if app.view == View::Tasks || app.showing_node_contract() {
         app.task_scroll

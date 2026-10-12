@@ -5,6 +5,7 @@
   "default_view": "restore",
   "keymap_file": null,
   "editor": "vi",
+  "helix_path": "hx",
   "agent": {
     "pi_path": "pi",
     "model": null,

@@ -31,6 +31,10 @@ pub enum Page {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Browse,
+    ConfirmEmbeddedEditor {
+        selection: crate::embedded::Selection,
+    },
+    ConfirmStopEditor,
     Help,
     Input {
         search: bool,
@@ -144,6 +148,10 @@ pub struct TaskSelection {
 
 pub struct App {
     pub config: crate::config::Config,
+    pub editor_screen: Option<vt100::Screen>,
+    pub editor_focused: bool,
+    pub requested_editor: Option<crate::embedded::Selection>,
+    pub requested_editor_stop: bool,
     pub name: String,
     pub content_revision: u64,
     pub branch: String,
@@ -276,6 +284,10 @@ impl App {
     pub fn empty(keymap: Keymap) -> Self {
         Self {
             config: crate::config::Config::default(),
+            editor_screen: None,
+            editor_focused: false,
+            requested_editor: None,
+            requested_editor_stop: false,
             name: "工作台".into(),
             content_revision: 0,
             branch: String::new(),
@@ -1081,6 +1093,15 @@ impl App {
                         *side = c as u8 - b'0';
                         ConflictKind::View(*side)
                     }
+                    KeyCode::Char('h') => {
+                        self.mode = Mode::ConfirmEmbeddedEditor {
+                            selection: crate::embedded::Selection::Conflict {
+                                draft: Box::new(draft.clone()),
+                                index: *index,
+                            },
+                        };
+                        return;
+                    }
                     KeyCode::Char('l') => ConflictKind::Lockfile,
                     KeyCode::Char('y') => ConflictKind::Advise,
                     KeyCode::Char('o') => ConflictKind::Choose(1),
@@ -1113,6 +1134,24 @@ impl App {
                         index: *index,
                         kind,
                     });
+                }
+                return;
+            }
+            Mode::ConfirmEmbeddedEditor { selection } => {
+                if key.code == KeyCode::Enter {
+                    self.requested_editor = Some(selection.clone());
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
+            Mode::ConfirmStopEditor => {
+                if key.code == KeyCode::Enter {
+                    self.requested_editor_stop = true;
+                    self.mode = Mode::Browse;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
                 }
                 return;
             }
@@ -1318,6 +1357,32 @@ impl App {
                 self.mode = Mode::Input {
                     search: true,
                     text: self.filter.clone(),
+                }
+            }
+            Action::EmbeddedEditor => {
+                if self.editor_screen.is_some() {
+                    self.editor_focused = true;
+                    return;
+                }
+                let selection = self.current().and_then(|file| match self.view {
+                    View::Project => Some(crate::embedded::Selection::Project {
+                        path: file.title.clone(),
+                        version: file.version.clone(),
+                    }),
+                    View::Review => {
+                        self.selected_task()
+                            .map(|task| crate::embedded::Selection::Review {
+                                task_id: task.id.clone(),
+                                path: file.title.clone(),
+                                version: file.version.clone(),
+                            })
+                    }
+                    _ => None,
+                });
+                if let Some(selection) = selection {
+                    self.mode = Mode::ConfirmEmbeddedEditor { selection };
+                } else {
+                    self.status = "请在项目代码、审核 diff 或集成草稿中按 h".into();
                 }
             }
             Action::Theme => self.light = !self.light,
