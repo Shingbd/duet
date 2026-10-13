@@ -335,7 +335,7 @@ fn draw_cached(
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
 format!(
-                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助 · {} Helix",
+                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
                         format!(
                             "{} 批准 · 自动实时预览 · {} 合并 · {} 删除 · ",
@@ -360,7 +360,7 @@ format!(
                     app.keymap.hint(Action::Fullscreen),
                     app.keymap.hint(Action::MarkRead),
                     app.keymap.hint(Action::Palette),
-                    app.keymap.hint(Action::Help),app.keymap.hint(Action::EmbeddedEditor)
+                    app.keymap.hint(Action::Help)
                 )
                 },
                 Style::default().fg(theme.muted),
@@ -394,7 +394,7 @@ format!(
                         "Helix 具有当前账号权限，可打开其他文件/调用其配置工具；PTY/worktree 不是 OS 沙箱。",
                     ),
                     Line::from(
-                        "Ctrl+] 切回 Duet · h 回 Helix · :wq 保存退出 · Enter 启动 / Esc 取消",
+                        "Ctrl+] 切回 Duet · Tab 回 Helix · :wq 保存退出 · Enter 启动 / Esc 取消",
                     ),
                 ],
                 110,
@@ -1753,7 +1753,7 @@ fn render_editor(
         if focused {
             " HELIX · Ctrl+] → Duet · :wq 保存退出 "
         } else {
-            " HELIX · h 回编辑器 "
+            " HELIX · Tab 回编辑器 "
         },
         focused,
     );

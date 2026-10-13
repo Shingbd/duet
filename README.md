@@ -75,7 +75,7 @@ See [editable review and contextual discussion](docs/review-editor.md) for contr
 
 **3** shows a directory tree and directly opens the selected project file in real embedded Helix. **j/k**, **h/l**, Enter navigate/open; **Tab** focuses Helix and **Ctrl+]** returns to the tree. **r** refreshes, **z** toggles ignored files; Git changes are marked.
 
-Files switch in the same PTY, preserving unsaved buffers without automatic saves. Targets are backed up. Install/configure `hx`; editor configuration/LSP tools have account permissions, not sandbox permissions. Startup/restart only restores tree preferences, never automatically launches an editor. Review retains its separate node/file navigation.
+Files switch in the same PTY, preserving unsaved buffers without automatic saves. Targets are backed up. Default `hx` uses PATH or an already-installed bundle beside the running Duet binary; otherwise install/configure it. No downloads or project-local executable discovery. Editor configuration/LSP tools have account permissions, not sandbox permissions. Startup/restart only restores tree preferences, never automatically launches an editor. Review retains its separate node/file navigation.
 
 See [project tree and Helix](docs/project-tree.md) for limits and real multi-buffer PTY validation.
 

@@ -26,6 +26,32 @@ pub struct Session {
     pub terminal: crate::embedded::PtyEditor,
     pub target: Target,
 }
+/// Only executable-relative bundled tools are considered; never search the opened repository.
+pub fn helix_candidates(
+    configured: &Path,
+    path: Option<&std::ffi::OsStr>,
+    host: &Path,
+) -> Vec<PathBuf> {
+    if configured.is_absolute() || configured.components().count() > 1 {
+        return vec![configured.to_path_buf()];
+    }
+    let mut candidates = path
+        .map(|p| {
+            std::env::split_paths(p)
+                .map(|d| d.join(configured))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if configured == Path::new("hx")
+        && let Some(bin) = host.parent()
+    {
+        candidates.push(bin.join("helix/hx"));
+        if let Some(target) = bin.parent() {
+            candidates.push(target.join("tools/helix-25.07.1-x86_64-linux/hx"));
+        }
+    }
+    candidates
+}
 pub fn safe_file(root: &Path, path: &str) -> Result<PathBuf> {
     validate_path(path)?;
     let mut file = root.to_path_buf();
@@ -52,17 +78,11 @@ pub fn start(
 ) -> Result<Session> {
     ensure!(cfg!(unix), "内嵌 Helix 当前仅支持 Unix PTY");
     let configured = &app.config.helix_path;
-    let candidates = if configured.is_absolute() || configured.components().count() > 1 {
-        vec![configured.clone()]
-    } else {
-        std::env::var_os("PATH")
-            .map(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|dir| dir.join(configured))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
+    let candidates = helix_candidates(
+        configured,
+        std::env::var_os("PATH").as_deref(),
+        &std::env::current_exe()?,
+    );
     let executable = candidates
         .into_iter()
         .find(|p| {

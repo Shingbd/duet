@@ -522,7 +522,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             app.editor_focused = false;
                             app.panel = duet_workbench::app::Panel::Queue;
                             app.status =
-                                "焦点回 Duet · h 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
+                                "焦点回 Duet · Tab 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
                                     .into();
                         } else if let Err(error) = editor.as_mut().unwrap().terminal.key(key) {
                             app.status = error.to_string();
@@ -676,7 +676,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 app.requested_conflict = None;
                 app.cancel_requested = false;
                 app.status =
-                    "Helix 仍在运行：h 返回，用 :wq 保存退出后再启动 AI、处理草稿或合入".into();
+                    "Helix 仍在运行：Tab 返回，用 :wq 保存退出后再启动 AI、处理草稿或合入".into();
             }
             if std::mem::take(&mut app.cancel_requested)
                 && let Some(coding) = &mut coding
