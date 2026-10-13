@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
         subprocess.run(["git", "-C", directory, *args], check=True, stdout=subprocess.DEVNULL)
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
-    process = subprocess.Popen([str(binary), "--helix", str(project/"missing-hx"), "open", directory], stdin=slave, stdout=slave,
+    process = subprocess.Popen([str(binary),'--review-editor','native',"--helix", str(project/"missing-hx"), "open", directory], stdin=slave, stdout=slave,
                                stderr=slave, env={**os.environ, "TERM": "xterm-256color"})
 
     def drain(seconds):

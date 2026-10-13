@@ -48,7 +48,7 @@ for line in sys.stdin:
     before=termios.tcgetattr(slave)
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,120,0,0))
     env={**os.environ,'TERM':'xterm-256color'}
-    process=subprocess.Popen([str(binary),'code','--repo',str(project),'--prompt','whole requirement','--allow-write','--pi',str(fake)],stdin=slave,stdout=slave,stderr=slave,env=env)
+    process=subprocess.Popen([str(binary),'--review-editor','native','code','--repo',str(project),'--prompt','whole requirement','--allow-write','--pi',str(fake)],stdin=slave,stdout=slave,stderr=slave,env=env)
     database=project/'.duet/workspace.db'
     def drain(seconds=0.12):
         until=time.monotonic()+seconds
@@ -99,7 +99,7 @@ for line in sys.stdin:
         send(b'q')
         assert process.wait(timeout=3)==0
         assert termios.tcgetattr(slave)==before
-        process=subprocess.Popen([str(binary),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
+        process=subprocess.Popen([str(binary),'--review-editor','native','open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
         drain(0.6)
         send(b'}')
         drain(0.5)

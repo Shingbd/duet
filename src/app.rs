@@ -153,6 +153,11 @@ pub struct TaskSelection {
 }
 
 pub struct App {
+    pub helix_review: bool,
+    pub requested_review_helix: bool,
+    pub requested_helix_context: bool,
+    pub helix_unknown: bool,
+    pub review_compare: bool,
     pub project_tree: crate::file_tree::Tree,
     pub requested_tree_refresh: bool,
     pub requested_project_open: Option<String>,
@@ -171,6 +176,7 @@ pub struct App {
     pub editor_screen: Option<vt100::Screen>,
     pub editor_focused: bool,
     pub editor_project: bool,
+    pub editor_conflict: bool,
     pub requested_editor: Option<crate::embedded::Selection>,
     pub requested_editor_stop: bool,
     pub name: String,
@@ -304,6 +310,11 @@ impl App {
 
     pub fn empty(keymap: Keymap) -> Self {
         Self {
+            helix_review: false,
+            requested_review_helix: false,
+            requested_helix_context: false,
+            helix_unknown: false,
+            review_compare: false,
             project_tree: crate::file_tree::Tree::default(),
             requested_tree_refresh: false,
             requested_project_open: None,
@@ -322,6 +333,7 @@ impl App {
             editor_screen: None,
             editor_focused: false,
             editor_project: false,
+            editor_conflict: false,
             requested_editor: None,
             requested_editor_stop: false,
             name: "工作台".into(),
@@ -979,15 +991,16 @@ impl App {
     }
 
     pub fn has_review_draft(&self, task: &TaskRecord) -> bool {
-        self.review_buffers.iter().any(|b| {
-            b.task_id == task.id
-                && b.changed()
-                && (task.checkpoint.as_deref() == Some(b.version.as_str())
-                    || task
-                        .nodes
-                        .iter()
-                        .any(|n| n.review_snapshot() == Some(b.version.as_str())))
-        })
+        (self.helix_review && self.helix_unknown)
+            || self.review_buffers.iter().any(|b| {
+                b.task_id == task.id
+                    && b.changed()
+                    && (task.checkpoint.as_deref() == Some(b.version.as_str())
+                        || task
+                            .nodes
+                            .iter()
+                            .any(|n| n.review_snapshot() == Some(b.version.as_str())))
+            })
     }
     pub fn current_buffer(&self) -> Option<&crate::review_editor::Buffer> {
         let item = self.current()?;
@@ -1011,6 +1024,15 @@ impl App {
             .find(|b| b.matches(&task, node.as_deref(), &path, &version))
     }
     pub fn open_review_chat(&mut self) {
+        if self.helix_review {
+            if self.editor_screen.is_some() {
+                self.requested_helix_context = true;
+            } else {
+                self.status =
+                    "请先按 2 / Tab 打开真正的 Helix，再 Ctrl+g 引用实际选区；未发送代码".into();
+            }
+            return;
+        }
         if let Some(buffer) = self.current_buffer() {
             self.review_chat_context = Some(buffer.context());
             self.review_chat_open = true;
@@ -1045,6 +1067,7 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.panel = Panel::Reader;
+                    self.editor_focused = self.editor_screen.is_some() && !self.review_compare;
                     return;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1074,6 +1097,62 @@ impl App {
         {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
                 self.open_review_chat();
+                return;
+            }
+            if self.helix_review && self.panel == Panel::Reader && self.selected_task().is_some() {
+                if matches!(key.code, KeyCode::Char('1' | '2' | '3' | '4')) && !self.review_compare
+                {
+                    if let Some(action) = self.keymap.resolve(key) {
+                        self.act(action);
+                    }
+                    return;
+                }
+                if self.review_compare
+                    && matches!(
+                        key.code,
+                        KeyCode::Char('j' | 'k')
+                            | KeyCode::Up
+                            | KeyCode::Down
+                            | KeyCode::PageUp
+                            | KeyCode::PageDown
+                    )
+                {
+                    if let Some(b) = self.current_buffer_mut() {
+                        let down = matches!(
+                            key.code,
+                            KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown
+                        );
+                        let n = if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+                            15
+                        } else {
+                            1
+                        };
+                        b.top = if down {
+                            b.top.saturating_add(n).min(b.rows.len().saturating_sub(1))
+                        } else {
+                            b.top.saturating_sub(n)
+                        };
+                    }
+                    return;
+                }
+                if key.code == KeyCode::Tab {
+                    self.act(Action::NextPanel);
+                } else if key.code == KeyCode::Esc
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('d' | ']' | '5')))
+                {
+                    self.review_compare = false;
+                    if key.code == KeyCode::Char('d') || key.code == KeyCode::Esc {
+                        self.editor_focused = self.editor_screen.is_some();
+                        self.panel = if self.editor_focused {
+                            Panel::Reader
+                        } else {
+                            Panel::Queue
+                        };
+                    } else {
+                        self.panel = Panel::Queue;
+                    }
+                }
                 return;
             }
             if self.panel == Panel::Reader && self.current_buffer().is_some() {
@@ -1106,6 +1185,7 @@ impl App {
                     KeyCode::Esc => {
                         self.mode = Mode::Browse;
                         self.panel = Panel::Reader;
+                        self.editor_focused = self.editor_screen.is_some() && !self.review_compare;
                     }
                     KeyCode::Enter if !text.trim().is_empty() => {
                         if let Some(context) = self.review_chat_context.clone() {
@@ -1143,6 +1223,8 @@ impl App {
                     self.panel = Panel::Reader;
                 } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
+                    self.panel = Panel::Reader;
+                    self.editor_focused = self.editor_screen.is_some() && self.helix_review;
                 }
                 return;
             }
@@ -1462,6 +1544,7 @@ impl App {
             && self.panel == Panel::Queue
             && !self.project_tree.entries.is_empty()
         {
+            let previous = self.project_tree.selected.clone();
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => self.project_tree.move_by(1),
                 KeyCode::Char('k') | KeyCode::Up => self.project_tree.move_by(-1),
@@ -1494,6 +1577,14 @@ impl App {
                     return;
                 }
             }
+            if self.project_tree.selected != previous
+                && self
+                    .project_tree
+                    .entry()
+                    .is_some_and(|e| !e.directory && e.status != 'D')
+            {
+                self.requested_project_open = Some(self.project_tree.selected.clone());
+            }
             return;
         }
         if let Some(action) = self.keymap.resolve(key) {
@@ -1504,7 +1595,11 @@ impl App {
     pub fn act(&mut self, action: Action) {
         match action {
             Action::Tasks => self.view = View::Tasks,
-            Action::Review => self.open_review(),
+            Action::Review => {
+                self.open_review();
+                self.requested_review_helix = true;
+                self.review_compare = false;
+            }
             Action::Project => {
                 let path = self.current().map(|i| i.title.clone());
                 self.view = View::Project;
@@ -1532,9 +1627,15 @@ impl App {
                     }
                     _ => Panel::Queue,
                 };
+                if self.view == View::Review && self.panel == Panel::Reader {
+                    self.requested_review_helix = true;
+                }
                 if self.editor_screen.is_some() {
                     self.editor_focused = self.panel == Panel::Reader
-                        && (!self.editor_project || self.view == View::Project);
+                        && !self.review_compare
+                        && (self.editor_conflict
+                            || ((!self.editor_project && self.view == View::Review)
+                                || (self.editor_project && self.view == View::Project)));
                 }
             }
             Action::Up | Action::Down => {
@@ -1598,6 +1699,14 @@ impl App {
                 self.fullscreen = !self.fullscreen;
                 if self.fullscreen {
                     self.panel = Panel::Reader;
+                    if self.helix_review && self.view == View::Review {
+                        self.requested_review_helix = true;
+                    }
+                    self.editor_focused = self.editor_screen.is_some()
+                        && !self.review_compare
+                        && (self.editor_conflict
+                            || (self.editor_project && self.view == View::Project)
+                            || (!self.editor_project && self.view == View::Review));
                 }
             }
             Action::Help => self.mode = Mode::Help,

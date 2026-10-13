@@ -3,7 +3,7 @@
 import os,pty,fcntl,struct,termios,subprocess,tempfile,pathlib,json,select,time,sys,re
 binary=pathlib.Path(sys.argv[1]).resolve();helix=pathlib.Path(sys.argv[2]).resolve()
 with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
- base=pathlib.Path(directory);project=base/'project';project.mkdir();source=project/'main.txt';source.write_text('original file\n');(project/'src').mkdir();second=project/'src/second file.txt';second.write_text('second original\n')
+ base=pathlib.Path(directory);project=base/'project';project.mkdir();source=project/'main.txt';source.write_text('original file\n');(project/'src').mkdir();second=project/'src/second file.txt';second.write_text('second original\n');special=project/'z %sh{touch marker}.txt';special.write_text('literal percent\n')
  for args in [('init','-q'),('add','.'),('-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','base')]:
   subprocess.run(['git','-C',str(project),*args],check=True)
  original=subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD'])
@@ -24,19 +24,21 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
   editor_pid=children.read_text().strip()
   send(b'ifirst unsaved ');send(b'\x1b');send(b'\x1d')
   # Directory first ordering: main.txt -> src -> expand -> second file.
-  send(b'klj\r');drain(.6)
+  send(b'klj');drain(.6)
   assert source.read_text()=='original file\n','switch must not save first buffer'
+  send(b't');drain(.3);assert b'48;2;245;246;250' in output,'light theme not rendered';send(b't');drain(.3)
   assert children.read_text().strip()==editor_pid,'switch restarted editor'
   send(b'\t');send(b'isecond unsaved ');send(b'\x1b');send(b'\x1d')
   assert second.read_text()=='second original\n'
   # Collapse src from child, then open main; original unsaved buffer must still exist.
-  send(b'hj\r');drain(.4);send(b'\t');send(b':wqa\r');drain(1)
+  send(b'hj');drain(.4);send(b'j');drain(.4);send(b'\t');send(b'ithird unsaved ');send(b'\x1b');send(b'\x1d');drain(.4);send(b'k');drain(.4);send(b'\t');send(b':wqa\r');drain(1)
   assert source.read_text()=='first unsaved original file\n',source.read_text()
   assert second.read_text()=='second unsaved second original\n',second.read_text()
+  assert special.read_text()=='third unsaved literal percent\n',special.read_text();assert not (project/'marker').exists(),'filename interpolation executed'
   assert subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD'])==original,'must not auto commit'
   assert list((project/'.duet/backups').glob('helix-*/before-file')),'backup missing'
   send(b'q');assert process.wait(timeout=4)==0;assert termios.tcgetattr(slave)==before
-  print('REAL HELIX TREE passed: nested directory expand/collapse, spaced filenames, same PTY, two unsaved buffers retained, explicit save-all, backups, unchanged HEAD, terminal restoration')
+  print('REAL HELIX TREE passed: nested directory expand/collapse, spaced filenames, same PTY, unsaved buffers retained, literal percent path without interpolation, explicit save-all, backups, unchanged HEAD, terminal restoration')
  finally:
   if process.poll() is None:process.kill();process.wait()
   os.close(master);os.close(slave)

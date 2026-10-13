@@ -193,6 +193,8 @@ fn draw_cached(
         .split(area);
     let badge = if app.view == View::Review && app.current_buffer().is_some() {
         app.tr("审核草稿 · 主项目不写", "Review draft · main untouched")
+    } else if app.view == View::Project && app.editor_screen.is_some() && app.editor_project {
+        app.tr("Helix · 编辑实际工作文件", "Helix · editing working files")
     } else if app.branch.is_empty() {
         app.tr("未打开项目", "No project")
     } else {
@@ -331,7 +333,11 @@ fn draw_cached(
         Paragraph::new(vec![
             Line::from(status_spans),
             Line::from(Span::styled(
-                if app.config.language==crate::config::Language::English {
+                if app.editor_focused {
+                    if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
+                }else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
+                    if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · Ctrl+] 回工作台；编辑按键不触发外部动作".into()}
+                }else if app.config.language==crate::config::Language::English {
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
 format!(
@@ -372,6 +378,7 @@ format!(
     match &app.mode {
         Mode::ConfirmEmbeddedEditor { selection } => {
             let target = match selection {
+                crate::embedded::Selection::ReviewBuffer => "独立审核草稿",
                 crate::embedded::Selection::ProjectFile { .. }
                 | crate::embedded::Selection::Project { .. } => {
                     "将编辑主项目实际工作文件（可能含未提交内容），不是只读快照；先备份，不自动提交。"
@@ -1721,6 +1728,19 @@ pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+pub fn editor_size_for(app: &App, area: Rect) -> (u16, u16) {
+    let (rows, cols) = editor_size(area, app.fullscreen);
+    if app.view == View::Review && app.review_chat_open && (app.fullscreen || area.width < 116) {
+        (
+            ((rows + 2) as u32 * 65 / 100)
+                .saturating_sub(2)
+                .clamp(1, 200) as u16,
+            cols,
+        )
+    } else {
+        (rows, cols)
+    }
+}
 pub fn editor_size(area: Rect, fullscreen: bool) -> (u16, u16) {
     let body_height = area.height.saturating_sub(6);
     let width = if fullscreen || area.width < 78 {
@@ -1930,13 +1950,21 @@ fn native_review(
         );
     }
     if inner.height > 0 {
-        let status=buffer.command.as_ref().map(|(search,text)|format!("{}{}",if *search{"/"}else{":"},safe_text(text))).unwrap_or_else(||"i 编辑 · v/Shift方向 选区 · Ctrl+g/:ask 讨论 · Ctrl+s 发布 · Ctrl+d 对比 · Ctrl+] 工作台".into());
+        let status = if app.helix_review {
+            if app.review_compare {
+                "只读对比 · j/k 滚动 · Ctrl+d 返回 Helix".into()
+            } else {
+                "只读快照 · 2 / Tab 打开 Helix；未初始化时不接受编辑/批准快捷键".into()
+            }
+        } else {
+            buffer.command.as_ref().map(|(search,text)|format!("{}{}",if *search{"/"}else{":"},safe_text(text))).unwrap_or_else(||"i 编辑 · v/Shift方向 选区 · Ctrl+g/:ask 讨论 · Ctrl+s 发布 · Ctrl+d 对比 · Ctrl+] 工作台".into())
+        };
         frame.render_widget(
             Paragraph::new(status).style(Style::default().fg(theme.accent)),
             Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
         );
     }
-    if focused {
+    if focused && !app.helix_review {
         let row = buffer.cursor_row().saturating_sub(buffer.top);
         let start = starts.get(buffer.line()).copied().unwrap_or(0);
         let col = buffer.text[start..buffer.cursor]
@@ -2026,8 +2054,22 @@ fn review_chat_panel(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
 
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
     if let Some(screen) = &app.editor_screen
-        && (!app.editor_project || app.view == View::Project)
+        && !app.review_compare
+        && (app.editor_conflict
+            || ((!app.editor_project && app.view == View::Review)
+                || (app.editor_project && app.view == View::Project)))
     {
+        let area = if app.view == View::Review
+            && app.review_chat_open
+            && (app.fullscreen || frame.area().width < 116)
+        {
+            let a = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(area);
+            review_chat_panel(frame, app, a[1], theme);
+            a[0]
+        } else {
+            area
+        };
         render_editor(frame, screen, area, app.editor_focused, theme);
         return;
     }

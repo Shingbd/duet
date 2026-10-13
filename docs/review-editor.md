@@ -1,6 +1,24 @@
 # Editable review and contextual AI / 可编辑审核与就地 AI 讨论
 
-Review (`2`) now displays a **native editor-style view automatically**: full file contents, old/new line numbers, lexical code coloring, additions in green and deletions in red. No `h`, Helix install, editor subprocess, or model request is needed to display it.
+## Default: real Helix / 默认：真正 Helix
+
+**2** explicitly opens real Helix in an independent draft; **3** shares that session for project files. Sidebar selection follows the file automatically. **Tab** enters Helix, **Ctrl+]** captures the current unsaved buffer and returns to workbench focus. Ordinary editor keys never dispatch workbench actions, and failed initialization stays read-only. Duet manages private dark/light Helix themes without rewriting global configuration.
+
+**2** 主动打开独立审核草稿中的真正 Helix，**3** 共用会话；侧栏选文件自动联动。**Tab** 进入，**Ctrl+]** 捕获未保存缓冲区并回工作台；编辑器按键不触发外部动作，初始化失败保持只读。使用私有深／浅配色，不改全局配置。
+
+- **Ctrl+G** captures path, cursor, flipped selection anchor, selected stdin and full unsaved stdin through Helix commands. Single-character normal selection means cursor word/current line; explicit Select mode or a longer selection means that exact range. Multi-selection/unbound paths/inconsistent position text are rejected. Only the excerpt and internal metadata reach Pi after question Enter; no range popup. Whole text remains local for stale protection.
+- **Ctrl+P → Enter** captures again before application, verifies full-buffer identity/version/revision/range, then the helper independently compares actual pipe input before replacing. Esc cancels; application stays unsaved in Helix and is undoable. No native-buffer write masquerades as a Helix edit.
+- **Ctrl+S** explicitly writes the current private file, then captures and attempts fixed publication with the original final-node-only/scope boundary below. Other drafts remain local. New review/verification do not inherit old approval.
+- **Ctrl+D** reads current text and opens the full read-only baseline/delivery comparison, including red deletions; j/k scroll and Ctrl+D returns to Helix. Helix itself also has the Git gutter. No ghost deletion row is editable source text.
+- Closing/saving Helix does not publish/approve/merge. Read-only code chat may coexist with the workspace editor; implementation/advisor/source integration still requires exit. Saved drafts remain in private worktrees; captured drafts/history persist in SQLite. Restart never starts Helix/model or restores pending suggestions.
+
+上述流程读取实际 Helix 状态而非屏幕。Ctrl+G 取得原始 argv 定位与 stdin 文本；普通单字符光标取词／行，Select 模式或较长选区按原范围；多选／未绑定路径／不一致文本拒绝。全文只在本地校验过期，Enter 才将摘录发送 Pi。Ctrl+P 先预览，Enter 后再次捕获和校验，helper 还会核对实际 pipe 输入才替换，Esc 不改；建议仍是 Helix 未保存、可撤销的编辑。Ctrl+S 明确保存私有文件，再按下方最终节点边界发布；Ctrl+D 为含红色删除的只读完整对照，不把删除行当源代码编辑。原候选／主文件／index／HEAD／旧批准不改，退出也不自动发布／批准／合入。
+
+Full setup, focus, shell safety and limits: [embedded Helix](helix.md). Project contextual AI is not yet enabled; internal-picker arbitrary files are not implicitly authorized for code disclosure. Global Helix configuration is not imported. Other unobserved review buffers conservatively block approval until captured or the editor exits. Private worktrees are retained; no automatic cleanup. The native-specific description below is a legacy option, not a fallback on hx failure.
+
+## Legacy native backend / 旧原生后端
+
+The remaining controls below describe explicitly configured `review_editor: "native"` / `--review-editor native`, **not the default Helix backend**. Native review (`2`) displays a **native editor-style view**: full file contents, old/new line numbers, lexical code coloring, additions in green and deletions in red. No `h`, Helix install, editor subprocess, or model request is needed to display it.
 
 审核（`2`）默认显示**原生编辑器式视图**：完整文件、旧/新行号、基础词法高亮、绿色新增和红色删除，无需按 `h`、安装 Helix、启动编辑器子进程或调用模型。
 

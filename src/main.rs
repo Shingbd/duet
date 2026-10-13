@@ -29,6 +29,8 @@ struct Cli {
     keymap: Option<PathBuf>,
     #[arg(long, global = true)]
     helix: Option<PathBuf>,
+    #[arg(long, global = true, value_enum)]
+    review_editor: Option<duet_workbench::config::ReviewEditor>,
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[arg(long, global = true, value_enum)]
@@ -53,6 +55,12 @@ enum ConfigCommand {
 }
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    HelixBridge {
+        directory: PathBuf,
+        #[arg(allow_hyphen_values = true)]
+        command: String,
+    },
     /// Preferences only: no implicit model calls or write permissions.
     Config {
         #[command(subcommand)]
@@ -113,6 +121,9 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Command::Workspace);
+    if let Command::HelixBridge { directory, command } = &command {
+        return duet_workbench::helix_workspace::helper(directory, command);
+    }
     if let Command::Config {
         action: ConfigCommand::Init { path },
     } = &command
@@ -133,6 +144,9 @@ fn main() -> Result<()> {
         _ => Path::new("."),
     };
     let mut config = Config::load(project, cli.config.as_deref())?;
+    if let Some(editor) = cli.review_editor {
+        config.review_editor = editor;
+    }
     if let Some(language) = cli.language {
         config.language = language;
     }
@@ -269,7 +283,7 @@ fn main() -> Result<()> {
             );
             client.shutdown()
         }
-        Command::Config { .. } => unreachable!(),
+        Command::Config { .. } | Command::HelixBridge { .. } => unreachable!(),
     }
 }
 
@@ -329,6 +343,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut last_input = Instant::now();
     let mut advisor: Option<duet_workbench::conflict_ai::Advisor> = None;
     let mut editor: Option<duet_workbench::editing::Session> = None;
+    app.helix_review = config.review_editor == duet_workbench::config::ReviewEditor::Helix;
     let mut review_runtime = duet_workbench::review_chat::Runtime::default();
     let review_repo = Repository::open(store.directory().parent().unwrap()).ok();
     if let Err(error) = app
@@ -344,10 +359,25 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         }
         if let Some(session) = &mut editor {
             let size = terminal.size()?;
-            let (rows, cols) = ui::editor_size(
+            let (rows, cols) = ui::editor_size_for(
+                &app,
                 ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                app.fullscreen,
             );
+            match duet_workbench::editing::poll_bridge(session, &mut app) {
+                Ok(changed) => {
+                    if changed {
+                        redraw = true;
+                        save_since.get_or_insert_with(Instant::now);
+                    }
+                }
+                Err(error) => {
+                    app.status = format!("Helix 桥接拒绝：{error}");
+                    app.editor_focused = false;
+                    app.panel = duet_workbench::app::Panel::Queue;
+                    app.helix_unknown = true;
+                    redraw = true;
+                }
+            }
             let activity = session
                 .terminal
                 .resize(rows, cols)
@@ -366,6 +396,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             }
             if let Some(status) = session.terminal.exit_status() {
                 let session = editor.take().unwrap();
+                app.requested_review_helix = false;
                 app.editor_screen = None;
                 app.editor_focused = false;
                 if let Err(error) = duet_workbench::editing::finish(
@@ -380,6 +411,23 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
                 redraw = true;
             }
+        }
+        if app.requested_review_publish || app.requested_review_chat.is_some() {
+            review_runtime.interact(
+                &mut app,
+                &mut store,
+                &config.agent,
+                advisor.is_some()
+                    || editor.as_ref().is_some_and(|s| {
+                        matches!(
+                            s.target,
+                            duet_workbench::editing::Target::Integration { .. }
+                        )
+                    })
+                    || coding.as_ref().is_some_and(|c| !c.is_finished()),
+            )?;
+            redraw = true;
+            save_since.get_or_insert_with(Instant::now);
         }
         if app.quit && editor.is_some() {
             app.quit = false;
@@ -463,13 +511,61 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             {
                 app.status = format!("审核编辑器不可用：{error}");
             }
+            if app.helix_review
+                && app.requested_review_helix
+                && app.view == duet_workbench::app::View::Review
+                && matches!(app.mode, Mode::Browse)
+                && !app.editor_focused
+                && app.current_buffer().is_some()
+            {
+                let result = (|| -> Result<()> {
+                    ensure!(
+                        advisor.is_none() && coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "AI 写入/顾问仍在运行；当前固定代码只读，请结束后按 2 打开 Helix"
+                    );
+                    let repo = review_repo.as_ref().context("审核需要 Git")?;
+                    if let Some(s) = &mut editor {
+                        if s.workspace.pending.is_none() {
+                            duet_workbench::editing::switch_review(s, &mut app, repo)?;
+                        }
+                    } else {
+                        let focus = app.panel == duet_workbench::app::Panel::Reader;
+                        let size = terminal.size()?;
+                        let (rows, cols) = ui::editor_size_for(
+                            &app,
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        );
+                        let s = duet_workbench::editing::start(
+                            duet_workbench::embedded::Selection::ReviewBuffer,
+                            &mut app,
+                            &store,
+                            rows,
+                            cols,
+                        )?;
+                        app.editor_screen = Some(s.terminal.screen().clone());
+                        app.editor_project = false;
+                        app.editor_focused = focus;
+                        if !focus {
+                            app.panel = duet_workbench::app::Panel::Queue;
+                        }
+                        editor = Some(s);
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    app.status = format!("Helix 审核不可用：{error}");
+                    app.requested_review_helix = false;
+                    app.editor_focused = false;
+                }
+            }
             let size = terminal.size()?;
-            let (rows, cols) = ui::editor_size(
+            let (rows, cols) = ui::editor_size_for(
+                &app,
                 ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                app.fullscreen,
             );
             let chat_inline = app.review_chat_open && (app.fullscreen || size.width < 116);
-            if let Some(buffer) = app.current_buffer_mut() {
+            let compare = app.review_compare;
+            if !compare && let Some(buffer) = app.current_buffer_mut() {
                 buffer.keep_visible(
                     if chat_inline {
                         (rows as usize * 65 / 100).saturating_sub(2)
@@ -513,22 +609,81 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             // Drain queued input before drawing so key repeats/pastes don't queue frames.
             for _ in 0..64 {
                 match event::read()? {
+                    Event::Key(_)
+                        if editor
+                            .as_ref()
+                            .is_some_and(|s| s.workspace.pending.is_some()) => {}
+                    Event::Key(key)
+                        if matches!(app.mode, Mode::ConfirmReviewPatch { .. })
+                            && editor.is_some()
+                            && key.code == crossterm::event::KeyCode::Enter =>
+                    {
+                        if let Mode::ConfirmReviewPatch { proposal } = &app.mode {
+                            let s = editor.as_mut().unwrap();
+                            s.workspace.confirm = Some(*proposal.clone());
+                            s.workspace.begin(&mut s.terminal, 0x10)?;
+                            app.mode = Mode::Browse;
+                        }
+                    }
                     Event::Key(key) if app.editor_focused && editor.is_some() => {
+                        editor
+                            .as_mut()
+                            .unwrap()
+                            .workspace
+                            .mark_input(app.view == duet_workbench::app::View::Project);
+                        app.helix_unknown =
+                            !editor.as_ref().unwrap().workspace.unobserved.is_empty();
                         if key
                             .modifiers
                             .contains(crossterm::event::KeyModifiers::CONTROL)
                             && matches!(key.code, crossterm::event::KeyCode::Char(']' | '5'))
                         {
+                            let s = editor.as_mut().unwrap();
+                            if !matches!(
+                                s.target,
+                                duet_workbench::editing::Target::Integration { .. }
+                            ) {
+                                s.workspace.begin(&mut s.terminal, 0x11)?;
+                            }
                             app.editor_focused = false;
+                            app.fullscreen = false;
                             app.panel = duet_workbench::app::Panel::Queue;
                             app.status =
                                 "焦点回 Duet · Tab 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
                                     .into();
+                        } else if app.view == duet_workbench::app::View::Review
+                            && key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            && matches!(
+                                key.code,
+                                crossterm::event::KeyCode::Char('g' | 's' | 'p' | 'd')
+                            )
+                        {
+                            let n = match key.code {
+                                crossterm::event::KeyCode::Char('g') => 7,
+                                crossterm::event::KeyCode::Char('s') => 19,
+                                crossterm::event::KeyCode::Char('p') => 16,
+                                _ => 4,
+                            };
+                            let s = editor.as_mut().unwrap();
+                            s.workspace.begin(&mut s.terminal, n)?;
                         } else if let Err(error) = editor.as_mut().unwrap().terminal.key(key) {
                             app.status = error.to_string();
                         }
                     }
+                    Event::Paste(_)
+                        if editor
+                            .as_ref()
+                            .is_some_and(|s| s.workspace.pending.is_some()) => {}
                     Event::Paste(text) if app.editor_focused && editor.is_some() => {
+                        editor
+                            .as_mut()
+                            .unwrap()
+                            .workspace
+                            .mark_input(app.view == duet_workbench::app::View::Project);
+                        app.helix_unknown =
+                            !editor.as_ref().unwrap().workspace.unobserved.is_empty();
                         if let Err(error) = editor.as_mut().unwrap().terminal.paste(&text) {
                             app.status = error.to_string();
                         }
@@ -561,18 +716,30 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             last_input = Instant::now();
             redraw = true;
             save_since.get_or_insert(last_input);
+            if std::mem::take(&mut app.requested_helix_context)
+                && let Some(s) = &mut editor
+                && let Err(e) = s.workspace.begin(&mut s.terminal, 7)
+            {
+                app.status = format!("未读取上下文：{e}");
+            }
             review_runtime.interact(
                 &mut app,
                 &mut store,
                 &config.agent,
                 advisor.is_some()
-                    || editor.is_some()
+                    || editor.as_ref().is_some_and(|s| {
+                        matches!(
+                            s.target,
+                            duet_workbench::editing::Target::Integration { .. }
+                        )
+                    })
                     || coding.as_ref().is_some_and(|c| !c.is_finished()),
             )?;
             if std::mem::take(&mut app.requested_editor_stop)
                 && let Some(mut session) = editor.take()
             {
                 app.requested_editor_stop = false;
+                app.requested_review_helix = false;
                 session.terminal.stop()?;
                 app.editor_screen = None;
                 app.editor_focused = false;
@@ -607,13 +774,20 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
                 if !path.is_empty() {
                     app.project_tree.reveal(&path);
+                    let focus = app.panel == duet_workbench::app::Panel::Reader;
                     if let Some(session) = &mut editor {
                         match duet_workbench::editing::switch_project(session, &store, &path) {
                             Ok(()) => {
                                 app.status =
                                     format!("Helix 打开 {path} · 原缓冲区保留，未自动保存");
-                                app.panel = duet_workbench::app::Panel::Queue;
-                                app.editor_focused = false;
+                                app.panel = if focus {
+                                    duet_workbench::app::Panel::Reader
+                                } else {
+                                    duet_workbench::app::Panel::Queue
+                                };
+                                app.editor_focused = focus;
+                                app.editor_project = true;
+                                app.review_compare = false;
                             }
                             Err(error) => app.status = format!("未切换文件：{error}"),
                         }
@@ -627,9 +801,11 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 let seamless = matches!(
                     &selection,
                     duet_workbench::embedded::Selection::ProjectFile { .. }
+                        | duet_workbench::embedded::Selection::ReviewBuffer
                 );
+                let focus = app.panel == duet_workbench::app::Panel::Reader;
                 let result = (|| -> Result<()> {
-                    ensure!(editor.is_none(), "编辑器已在运行，h 返回");
+                    ensure!(editor.is_none(), "编辑器已在运行，Tab 返回");
                     ensure!(
                         advisor.is_none()
                             && review_runtime.chat.is_none()
@@ -637,17 +813,21 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         "请先结束 AI 执行/讨论；人工编辑器与模型运行互斥"
                     );
                     let size = terminal.size()?;
-                    let (rows, cols) = ui::editor_size(
+                    let (rows, cols) = ui::editor_size_for(
+                        &app,
                         ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                        app.fullscreen,
                     );
                     let session =
                         duet_workbench::editing::start(selection, &mut app, &store, rows, cols)?;
                     app.editor_screen = Some(session.terminal.screen().clone());
                     editor = Some(session);
                     if seamless {
-                        app.panel = duet_workbench::app::Panel::Queue;
-                        app.editor_focused = false;
+                        app.panel = if focus {
+                            duet_workbench::app::Panel::Reader
+                        } else {
+                            duet_workbench::app::Panel::Queue
+                        };
+                        app.editor_focused = focus;
                     }
                     Ok(())
                 })();

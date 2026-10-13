@@ -41,7 +41,7 @@ for line in sys.stdin:
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,120,0,0))
     process=None;output=bytearray();database=project/'.duet/workspace.db'
     def launch():
-        return subprocess.Popen([str(binary),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
+        return subprocess.Popen([str(binary),'--review-editor','native','open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
     def drain(seconds=.1):
         end=time.monotonic()+seconds
         while time.monotonic()<end:

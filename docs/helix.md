@@ -1,95 +1,57 @@
 # Embedded Helix / 框内 Helix
 
-[English README](../README.md) · [中文首页](../README.zh-CN.md)
+[English README](../README.md) · [中文首页](../README.zh-CN.md) · [Review](review-editor.md) · [Project tree](project-tree.md)
 
-Project entry **3** now uses [a project file tree and seamless Helix](project-tree.md): no h confirmation there; Tab focuses the editor, Ctrl+] returns to the tree, h/l navigate directories. This page's h-confirmation controls apply to optional review/conflict editing.
+**Review 2 and Project 3 use the same real Unix PTY Helix session by default.** Press the view key explicitly to open it; no h confirmation. Sidebar navigation opens the corresponding file without resetting other buffers. Tab focuses code, Ctrl+] returns. Restart never launches/resumes an editor. Missing hx is an error with a read-only fixed comparison, not a native editor disguised as Helix.
 
-项目入口 **3** 已接入[文件树与无缝 Helix](project-tree.md)，无需 h 确认；Tab 进入编辑器，Ctrl+] 回树，h/l 导航目录。本页 h 确认流程适用于审核/冲突可选编辑。
+**审核 2 / 项目 3 默认共享真正 Unix PTY Helix**。主动按视图键打开，不需 h 确认；侧栏选文件联动打开，保留其他缓冲区。Tab 进入代码，Ctrl+] 返回。重启不启动／恢复编辑器；hx 缺失时说明错误、只读显示固定代码，不把原生编辑器假称 Helix。
 
-The default review panel is now [a native editable review buffer with contextual AI](review-editor.md), not a Helix process. This page documents the optional Helix entry. Its PTY cannot supply exact cursor/selection/unsaved-buffer context to Duet.
+## Setup / 设置
 
-默认审核现在使用[原生可编辑缓冲区与上下文 AI](review-editor.md)，不是 Helix 进程。本页说明可选 Helix 入口，其 PTY 不向 Duet 提供精确光标、选区或未保存缓冲区。
+Install hx with its matching runtime; set `helix_path` / `--helix /absolute/path/to/hx` if needed. Default hx tries PATH, then bundled tools relative to the running Duet executable (`helix/hx`, or `../tools/helix-25.07.1-x86_64-linux/hx`). No download or opened-repository tool search. Explicit custom paths/names are not replaced when missing. `editor` / `DUET_EDITOR` still select the separate external conflict editor.
 
-Helix runs in a real Unix PTY. Duet parses the child terminal output into styled cells and renders them inside the code/diff panel, with its own navigation and evidence panels still visible. This is not a suspend-and-launch external editor.
+安装匹配 runtime 的 hx；必要时设置 helix_path / --helix。默认 hx 先查 PATH，再查运行中的 Duet 程序旁配套包；不下载、不从打开的仓库搜索工具。明确的自定义路径／名称失效不静默替换。editor / DUET_EDITOR 仍用于独立外部冲突编辑。
 
-Helix 在真实 Unix PTY 中运行，Duet 将输出解析为带样式的单元格，绘制在代码/diff 框内，保留工作台侧栏与证据区，不是暂停工作台后另开编辑器。
+Duet creates private per-session configuration under `.duet/helix-workspaces/<nonce>/config`, with duet-dark/duet-light palettes, auto-format disabled and bridge bindings. Host theme changes propagate to Helix. The child's XDG config/cache paths are isolated; global Helix settings are not rewritten or imported. Ordinary Helix bindings remain, except the documented bridge keys; A-p is reserved internally for confirmed patch application. Shell commands typed explicitly by the human continue through /bin/sh; bridge commands are parsed as raw argv and selection text arrives through stdin, never through shell interpolation.
 
-## Setup / 配置
+每次会话在私有目录生成配套配置／缓存，主题与 Duet 同步，关闭自动格式化，不改写或导入全局 Helix 配置。除桥接键及内部保留 A-p 外，普通按键沿用 Helix。人工明确输入的 shell 命令仍可调用 /bin/sh；桥接命令以原始 argv 解析，代码经 stdin 传递，不把代码／文件名拼进 shell 求值。
 
-Install Helix with its matching runtime files, and make `hx` available on `PATH`, or configure:
+## Focus / 焦点
 
-安装 Helix 及匹配的 runtime，让 `hx` 可从 `PATH` 调用，或者配置：
+- Tab from sidebar → real Helix; Ctrl+] → workbench, without saving/closing.
+- Normal keys, selections, undo, searching, space menus and paste belong to Helix with editor focus. The footer shows editor controls, not approval/start shortcuts.
+- Review: Ctrl+G asks using real unsaved context; Ctrl+P previews then Enter applies, Esc cancels; Ctrl+S saves the private file and attempts fixed publication; Ctrl+D opens/closes read-only full diff.
+- `:w`, `:wa`, `:wqa` follow Helix rules. No automatic commit/approval/merge.
+- Quitting Duet with Helix running requires termination confirmation; stopping can lose uncaptured unsaved editor text. Saved private drafts and project files remain.
+- Context capture briefly pauses key dispatch. Errors/timeouts reject the operation instead of using guessed/stale text.
 
-```json
-{
-  "helix_path": "/absolute/path/to/helix/hx"
-}
-```
+- 侧栏 Tab → 真正 Helix；Ctrl+] → 工作台，不保存、不关闭。
+- 编辑焦点下移动、选区、撤销、搜索、space 菜单、粘贴由 Helix 处理；底栏显示编辑器操作，不显示批准／启动键。
+- 审核 Ctrl+G 提问，Ctrl+P 预览再 Enter 应用／Esc 取消，Ctrl+S 保存私有文件并尝试固定发布，Ctrl+D 打开／返回只读完整 diff。
+- :w / :wa / :wqa 遵循 Helix；不自动提交／批准／合入。
+- 退出工作台需终止确认；停止可能丢失未捕获的未保存文本，已保存草稿／项目文件保留。
+- 读取上下文时短暂暂停按键处理；错误／超时拒绝操作，不猜或使用过期代码。
 
-Temporary CLI override / 本次启动指定：
+## Targets and immutable review / 目标与不可变审核
 
-```bash
-./target/release/duet-workbench --helix /absolute/path/to/hx open /path/to/project
-```
+Project edits current working files after backup; no commit. Review uses independent worktrees under `.duet/helix-workspaces/<nonce>/reviews/<index>`, based on the node baseline with only the bound file populated from fixed delivery/local draft. Git gutter compares to that baseline; Ctrl+D includes deleted comparison rows. Original delivery, main files/index/HEAD, original candidates and approvals are untouched by editing. Existing pending/historical nodes can be edited locally; publication keeps its [final-node-only boundary](review-editor.md#persistence-and-publication--持久化与发布).
 
-`helix_path` selects the embedded editor. `editor` and `DUET_EDITOR` continue to select the separate external editor used by `e` in conflict dialogs. Duet never automatically downloads or installs an editor when opening a project.
+项目编辑备份后的实际工作文件，不提交。审核使用独立 worktree，在节点基线之上填入该固定文件／本地草稿；Git 行侧标记基线差异，Ctrl+D 包含删除行。编辑不改原交付、主文件／index／HEAD、候选及批准。待审／历史节点可本地编辑，发布仍限最终节点。
 
-`helix_path` 用于内嵌编辑；`editor` / `DUET_EDITOR` 仍控制冲突界面 `e` 调用的外部编辑器。打开项目不会自动下载或安装编辑器。
+h-confirmed final-integration/conflict editing remains separate: it requires the original approved-task/draft validation and captures a new fixed integration revision on exit. It is not the default Review backend.
 
-## Keys / 操作
+h 确认的最终集成／冲突编辑保留原有批准／草稿校验，退出捕获新固定集成修订；不是默认审核后端。
 
-1. In Project code, approved Review diff, or an integration draft, press **h**, then **Enter** to authorize the selected target. **Esc** cancels without starting a process.
-2. Normal keys—including `i`, `q`, `:`, Esc, arrows, control keys and paste—go to Helix while it has focus; they do not trigger Duet shortcuts.
-3. **Ctrl+]** switches focus back to Duet without closing Helix; **h** returns focus to Helix. Keep the editor running while browsing other sidebar selections.
-4. **:wq → Enter** saves and exits Helix; **:q** exits without saving when Helix allows it. Exit does not approve, test, commit, or merge anything.
-5. Trying to quit Duet with an editor still running opens a termination confirmation. Enter stops the editor process group; unsaved buffers are lost, saved files are preserved. Esc cancels so you can return with h and save normally.
+## Safety and limits / 安全与边界
 
-1. 在项目代码、已批准任务的审核 diff 或集成草稿中按 **h → Enter** 明确授权目标；**Esc** 取消且不启动程序。
-2. 编辑器获得焦点时，`i`、`q`、`:`、Esc、方向/控制键及粘贴都交给 Helix，不触发 Duet 快捷键。
-3. **Ctrl+]** 回到 Duet，编辑器仍运行；**h** 回到 Helix。可以浏览侧栏，但禁止并发写入流程。
-4. **:wq → Enter** 保存退出；**:q** 按 Helix 自身规则退出。退出不批准、不测试、不提交、不合入。
-5. Helix 运行中退出 Duet 会进入终止确认：Enter 停止编辑器进程组，未保存缓冲区丢失，已保存文件保留；Esc 取消，再 h 回编辑器正常保存。
+Unix PTY, keyboard routing, UTF-8 regular files ≤1 MiB, ≤64 review buffers/24 MiB total text, ≤128 session file bindings, ≤256 KiB AI excerpt. Bridge supports a single selection; multi-selection is rejected, not silently narrowed. Actual path is checked against host bindings, cursor and flipped-anchor positions against captured full text. Internal picker switches synchronize on explicit capture/return; arbitrary unbound buffers cannot be sent to AI. Unobserved other review buffers conservatively block approval until captured or the editor exits. Save/exit before implementation, deletion/rollback, advisor, or merge; read-only contextual chat is the deliberate exception.
 
-The default h binding is `embedded_editor` in keymap overrides. Ctrl+] is reserved for the child-terminal focus switch. Terminal resizing updates both PTY size and the virtual screen. Normal shutdown and panic unwinding drop and reap the editor child. SIGKILL cannot run host cleanup; the OS closes the PTY, but separately daemonized tools are not guaranteed to exit. PTY is not a container.
+Unix、键盘、普通 UTF-8 文件 ≤1 MiB；最多64审核缓冲区／24 MiB正文、128会话文件绑定、AI引用 ≤256 KiB。桥接支持单选区，多选拒绝而非偷偷缩成主选区。校验真实路径绑定、光标／反转锚点与实际全文。Helix 内选文件在明确捕获／返回时同步；任意未绑定缓冲区不能发给 AI。未观察到的其他审核缓冲区保守阻止批准，直到捕获或退出。实现、删除／撤回、顾问、合入前保存退出；只读就地聊天是明确的例外。
 
-默认 h 的可配置动作名为 `embedded_editor`；Ctrl+] 专用于焦点切换。终端缩放同步更新 PTY 与虚拟屏幕。正常退出/panic 展开会回收子进程；SIGKILL 不会运行宿主清理，只能依赖内核关闭 PTY，不能承诺另行 daemonize 的工具退出；PTY 不是容器。
+PTY/worktree is **not an OS sandbox**: human Helix commands/LSP may access other files with account permissions. No model is launched merely by opening an editor. Terminal OSC/DCS is not forwarded, virtual screen ≤200×400 cells. Mouse, full Kitty keyboard/system clipboard protocols and arbitrary terminal graphics remain unsupported. Normal exit/Drop reaps process groups; SIGKILL cannot run host cleanup. Private worktrees/configuration are retained, not automatically cleaned up.
 
-## What gets edited? / 实际编辑哪里？
-
-| Entry / 入口 | Actual target / 实际目标 | After exit / 退出后 |
-| --- | --- | --- |
-| Project (`3`) | Current main working file, including existing uncommitted content / 主项目实际文件，包括已有未提交内容 | Saved changes remain uncommitted. The project reader still shows fixed HEAD; commit externally and reopen to refresh / 保存后仍未提交，项目阅读仍显示固定 HEAD，人工提交后重开刷新 |
-| Review (`2`) | A separate final integration worktree for an implemented, fully approved, unmerged task; not the historical node snapshot on screen / 已全部实现并批准、尚未合入任务的独立最终集成工作区，不是屏幕上的历史节点快照 | Capture a new immutable integration revision, retaining original candidates and node approvals; review the new final diff and explicitly confirm merge / 捕获新固定修复版本，原候选与节点批准保留，新修复仍需最终 diff 与确认合入 |
-| Integration draft | The selected managed draft file / 所选受管草稿文件 | Capture/mark resolved only if validation succeeds and markers are removed; otherwise preserve work and report failure / 校验与标记清除成功才捕获/标记处理，否则保留改动并说明失败 |
-
-Every launch backs up the target file in private `.duet/backups/helix-*`. An editor crash or capture failure does not silently roll back saved work or claim approval. Main HEAD/task/approval changes and out-of-scope draft writes are still rejected by integration validation.
-
-每次启动先将目标文件备份到私有 `.duet/backups/helix-*`。崩溃或捕获失败不会偷偷回滚已保存内容，也不会伪称批准；主 HEAD/任务/审批变化及草稿越界修改仍被校验拒绝。
-
-AI execution/advisory and source-mutating operations are blocked while an editor session exists, including while focus is in Duet. Save/exit Helix before starting models, deleting/rolling back tasks, rebuilding drafts, or merging. Browse/search/note-taking remain available.
-
-只要编辑器会话存在（包括焦点回到 Duet），会阻止 AI 执行/顾问与修改源文件的流程；先保存退出，再调用模型、撤回/删除任务、重建草稿或合入。浏览、搜索和笔记仍可使用。
-
-## Limits and safety / 限制与安全
-
-- Unix-only PTY implementation. Keyboard editing is supported; embedded mouse routing, full Kitty keyboard protocol, host/system clipboard OSC passthrough, and arbitrary terminal graphics are not implemented.
-- Virtual terminal is capped at 200 rows × 400 columns; polling and input queues are bounded. Child OSC/DCS text is never passed through to the host terminal.
-- Target files must be regular UTF-8 files up to 1 MiB, without symlink components. Deleted files, unapproved/pending task delivery edits, merged/historical-node rework, and contract rewriting are not supported by this entry.
-- Helix has the account's permissions and may open other files, invoke shell commands, LSP servers, or configured tools. PTY/worktree is **not an OS sandbox**. Launch is explicitly authorized; no model is called to start the editor.
-
-- 目前仅 Unix，支持键盘编辑；尚未实现内嵌鼠标、完整 Kitty 键盘协议、宿主/系统剪贴板 OSC 透传或任意终端图形。
-- 虚拟终端最多 200 行 × 400 列，轮询和输入队列有界；子进程 OSC/DCS 不透传到宿主终端。
-- 目标须为最多 1 MiB 的 UTF-8 普通文件，不允许符号链接路径。删除文件、未批准交付编辑、已合入/历史节点返工与改写契约不在此入口范围。
-- Helix 具有当前账号权限，可打开其他文件、执行 shell、LSP 或配置的工具。PTY/worktree **不是 OS 沙箱**；启动需明确授权，不调用模型。
+PTY/worktree **不是 OS 沙箱**。Helix 命令／LSP 有账号权限；打开编辑器不调用模型。OSC/DCS 不透传，虚拟屏幕 ≤200×400；鼠标、完整 Kitty／系统剪贴板协议、任意图形未实现。正常退出／Drop 回收进程组，SIGKILL 无法运行宿主清理。私有工作区／配置保留，尚无自动清理。
 
 ## Validation / 验证
 
-```bash
-cargo test --test embedded
-python3 scripts/helix-smoke.py target/release/duet-workbench /path/to/hx
-python3 scripts/helix-review-smoke.py target/release/duet-workbench /path/to/hx
-```
-
-Tests cover real PTY input/output, terminal cells/styles/Unicode, resize, focus switching, backups and child cleanup. Helix 25.07.1 was tested with real nested PTYs; the review fixture uses fake RPC only for task delivery, then real Helix and explicit merge. No live model calls occur.
-
-测试覆盖真实 PTY、样式/Unicode 单元格、缩放、焦点、备份与子进程清理；真实 Helix 25.07.1 已验证。审核夹具仅以假 RPC 生成交付，随后使用真实 Helix 和明确合入，全程无真实模型调用。
+`tests/helix_workspace.rs` checks exact Unicode/repeated-word ranges, injection resistance, stale/unbound/multi-selection rejection, independent source/index/HEAD, uncertainty and real Helix palette cells. `scripts/helix-unified-smoke.py` uses real Helix 25.07.1 and fake RPC for unsaved selection discussion, explicit patch cancellation/application, fixed revision, same PID across 2/3, retained candidate, independent approval/merge and restart. `scripts/project-tree-smoke.py` verifies automatic selection switching, dark/light theme and two unsaved buffers. Legacy native review regression explicitly uses --review-editor native. No live models are called.

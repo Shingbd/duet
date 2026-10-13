@@ -36,7 +36,7 @@ Lowest to highest / 从低到高：
 2. `$XDG_CONFIG_HOME/duet/config.json`; otherwise `$HOME/.config/duet/config.json` / 用户全局配置。
 3. `<opened-project>/duet.json` / 打开的项目配置，不是任意启动目录的配置。
 4. File supplied with `--config` / 显式配置文件。
-5. CLI overrides: `--language`, `--theme`, `--keymap`, `--helix`; `code` also accepts `--pi`, `--model`, `--timeout-secs` / 命令行参数。
+5. CLI overrides: `--language`, `--theme`, `--keymap`, `--helix`, `--review-editor`; `code` also accepts `--pi`, `--model`, `--timeout-secs` / 命令行参数。
 
 JSON objects merge recursively. Missing fields inherit previous values; explicit `"model": null` uses Pi's own configured default model. Unknown fields, invalid enum values, out-of-range limits, malformed JSON, symlink configuration files, and files larger than 64 KiB are rejected before workspace initialization. Relative keymap paths resolve against their configuration file; Pi/editor paths containing directories do likewise. Bare executable names such as `pi` or `vi` use `PATH`. `~` and environment variables inside JSON strings are not expanded.
 
@@ -57,6 +57,7 @@ Project configuration is ordinary source data and can be committed. If creating/
 | `keymap_file` | `null` | Optional keymap JSON; default bindings otherwise / 快捷键文件，空值使用默认 |
 | `editor` | `"vi"` | Single executable path, used only after confirmed editing; `DUET_EDITOR` overrides / 单个编辑器路径，确认后启动，环境变量优先 |
 | `helix_path` | `"hx"` | Embedded Helix executable; `--helix` overrides / 框内 Helix 可执行路径，--helix 覆盖 |
+| `review_editor` | `"helix"` | Real Helix default; explicit `"native"` legacy backend / 默认真实 Helix，native 明确选择旧原生后端 |
 | `agent.pi_path` | `"pi"` | Pi executable for planning, coding, retry, advisory, and probe / Pi 程序路径 |
 | `agent.model` | `null` | Explicit model identifier or Pi default; no automatic fallback / 模型标识或 Pi 默认，不自动切换 |
 | `agent.timeout_secs` | `600` | 1–3600 seconds per active start/continuation; advisory uses the same budget / 执行预算，顾问也使用该值 |

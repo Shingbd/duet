@@ -80,7 +80,7 @@ for line in sys.stdin.buffer:
     master, slave = pty.openpty()
     before = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 120, 0, 0))
-    process = subprocess.Popen([str(binary), 'code', '--repo', str(project), '--prompt', 'initial task',
+    process = subprocess.Popen([str(binary),'--review-editor','native','code', '--repo', str(project), '--prompt', 'initial task',
                                 '--allow-write', '--pi', str(fake)], stdin=slave, stdout=slave, stderr=slave,
                                env={**os.environ, 'TERM': 'xterm-256color'})
     output = bytearray()
@@ -135,7 +135,7 @@ for line in sys.stdin.buffer:
         assert process.wait(timeout=3) == 0
         assert termios.tcgetattr(slave) == before
         # Reopen: the task chat AND its immutable delivery files must be available.
-        process = subprocess.Popen([str(binary), 'open', str(project)],
+        process = subprocess.Popen([str(binary),'--review-editor','native','open', str(project)],
                                    stdin=slave, stdout=slave, stderr=slave,
                                    env={**os.environ, 'TERM': 'xterm-256color'})
         drain(0.5)

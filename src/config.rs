@@ -8,6 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewEditor {
+    #[default]
+    Helix,
+    Native,
+}
 pub const DEFAULT_JSON: &str = include_str!("../duet.default.json");
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum Language {
@@ -89,6 +96,7 @@ pub struct Config {
     pub keymap_file: Option<PathBuf>,
     pub editor: PathBuf,
     pub helix_path: PathBuf,
+    pub review_editor: ReviewEditor,
     pub agent: AgentConfig,
     pub performance: Performance,
 }
@@ -102,6 +110,7 @@ impl Default for Config {
             keymap_file: None,
             editor: "vi".into(),
             helix_path: "hx".into(),
+            review_editor: ReviewEditor::Helix,
             agent: AgentConfig::default(),
             performance: Performance::default(),
         }

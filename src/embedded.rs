@@ -9,6 +9,7 @@ use std::{
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
+    ReviewBuffer,
     ProjectFile {
         path: String,
     },
@@ -29,6 +30,7 @@ pub enum Selection {
 impl Selection {
     pub fn path(&self) -> &str {
         match self {
+            Self::ReviewBuffer => "审核草稿",
             Self::ProjectFile { path } | Self::Project { path, .. } | Self::Review { path, .. } => {
                 path
             }
@@ -51,6 +53,17 @@ pub struct PtyEditor {
 impl PtyEditor {
     #[cfg(unix)]
     pub fn spawn(executable: &Path, cwd: &Path, path: &Path, rows: u16, cols: u16) -> Result<Self> {
+        Self::spawn_managed(executable, cwd, path, rows, cols, None)
+    }
+    #[cfg(unix)]
+    pub fn spawn_managed(
+        executable: &Path,
+        cwd: &Path,
+        path: &Path,
+        rows: u16,
+        cols: u16,
+        config_home: Option<&Path>,
+    ) -> Result<Self> {
         use std::os::{
             fd::{AsRawFd, FromRawFd},
             unix::process::CommandExt,
@@ -103,6 +116,13 @@ impl PtyEditor {
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
+        if let Some(home) = config_home {
+            command
+                .env("XDG_CONFIG_HOME", home)
+                .env("XDG_CACHE_HOME", home.join("cache"))
+                .arg("--config")
+                .arg(home.join("helix/config.toml"));
+        }
         // Only async-signal-safe syscalls in the post-fork child; fd 0 is already the slave.
         unsafe {
             command.pre_exec(|| {
@@ -138,6 +158,17 @@ impl PtyEditor {
         _cols: u16,
     ) -> Result<Self> {
         anyhow::bail!("Embedded Helix currently requires Unix PTY support")
+    }
+    #[cfg(not(unix))]
+    pub fn spawn_managed(
+        executable: &Path,
+        cwd: &Path,
+        path: &Path,
+        rows: u16,
+        cols: u16,
+        _config_home: Option<&Path>,
+    ) -> Result<Self> {
+        Self::spawn(executable, cwd, path, rows, cols)
     }
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()

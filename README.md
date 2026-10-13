@@ -61,34 +61,21 @@ Defaults are shipped in [`duet.default.json`](duet.default.json). This repositor
 
 Preferences include language (`zh-CN` / partial `en`), theme, initial view, keymap, editor, Pi executable/model, execution budget, and UI polling/save delays. Precedence: built-in → user-global → project's `duet.json` → `--config` → CLI overrides. Preferences never grant model/write/merge permission. See the [configuration guide](docs/configuration.md) for paths, validation, and language coverage.
 
-## Editable review + contextual AI
+## Unified Helix + contextual review AI
 
-Review now automatically shows full code, line numbers, lexical highlighting and colored additions/deletions—no `h` or editor subprocess needed. **Tab** focuses the native editor; **i** edits; **Ctrl+]** returns to workbench shortcuts.
+**2 Review and 3 Project now use the same real embedded Helix session**, with Duet's dark/light palette. No `h` launch step. Entry focus stays in the sidebar; **Tab** enters Helix and **Ctrl+]** returns. Editor-focused keys belong to Helix, not workbench shortcuts.
 
-**Ctrl+G** or **:ask** opens a code question. Enter sends the cursor word/line or selection directly, including unsaved edits, **without a range-confirmation dialog**. Replies appear next to the code. Discussion disables all Pi tools; suggested patches require **Ctrl+P → Enter** and reject changed buffers.
+In Review, files are independent private drafts bound to fixed task/node snapshots. **Ctrl+D** shows the read-only full additions/deletions comparison; Ctrl+D returns to Helix. **Ctrl+G** reads the actual selection (or cursor word/line), including unsaved text, through an explicit command/stdin bridge—not terminal-cell guesses. Enter directly submits the question without a range popup. AI discussion disables every Pi tool; **Ctrl+P → Enter** explicitly applies a suggestion only after rechecking the actual full buffer.
 
-**Ctrl+S** saves the draft and attempts a new immutable revision, resetting approval/verification without touching main or the original candidate. First-version publication supports the final-delivery node of a fully implemented, unmerged task, within its original scope; earlier/live/historical-node drafts can be edited/discussed, but their publication/downstream rebuild is not implemented.
+**Ctrl+S** saves the current private draft and attempts a new immutable revision. Publication remains limited to the final-delivery node of a fully implemented, unmerged task, within original scope. Old candidates, snapshots and approvals remain intact; a new revision needs new approval. Save/exit Helix before integration or starting implementation.
 
-See [editable review and contextual discussion](docs/review-editor.md) for controls, persistence and limitations. The default view is host-owned, not Helix; syntax coloring is lexical rather than full language-server semantics.
+Project has a directory tree: **j/k** selection immediately follows the selected file, **h/l** collapse/expand directories, Enter explicitly reopens/toggles; **r** refreshes and **z** toggles ignored files. The same PTY retains unsaved buffers; selecting never saves or commits. Project targets are actual working files, backed up before host-driven opening.
 
-## Project file tree + seamless Helix
+Default `hx` uses PATH or the already-installed executable-relative bundle. Duet-managed temporary configuration applies its palette and bridge keys without rewriting your global Helix settings. Helix tools have account permissions, **not sandbox permissions**. Opening/restarting restores records, never automatically launches an editor/model. Contextual AI currently applies to managed Review buffers, not Project files or arbitrary Helix-picker buffers.
 
-**3** shows a directory tree and directly opens the selected project file in real embedded Helix. **j/k**, **h/l**, Enter navigate/open; **Tab** focuses Helix and **Ctrl+]** returns to the tree. **r** refreshes, **z** toggles ignored files; Git changes are marked.
+An explicitly selected legacy native review backend remains available through `review_editor: "native"` / `--review-editor native`; it is never mislabeled Helix or silently selected when hx fails. Conflict/manual final-integration editing retains `h → Enter`.
 
-Files switch in the same PTY, preserving unsaved buffers without automatic saves. Targets are backed up. Default `hx` uses PATH or an already-installed bundle beside the running Duet binary; otherwise install/configure it. No downloads or project-local executable discovery. Editor configuration/LSP tools have account permissions, not sandbox permissions. Startup/restart only restores tree preferences, never automatically launches an editor. Review retains its separate node/file navigation.
-
-See [project tree and Helix](docs/project-tree.md) for limits and real multi-buffer PTY validation.
-
-## Optional review/conflict Helix
-
-Helix can run **inside the code/diff panel** using a real Unix PTY, without leaving Duet. Install `hx` with its runtime, or set `helix_path` / use `--helix /path/to/hx`.
-
-- In review/conflict, **h → Enter** opens the selected target; **Ctrl+]** returns focus to Duet. Project tree uses **3 / Enter**, then **Tab** to focus; **h/l** are directory navigation there.
-- **:wq → Enter** saves/exits. No automatic commit, approval, model call, or merge.
-- Project code edits actual main files after backup. Review editing currently requires a fully approved, unmerged task and creates a separate integration revision, not a mutation of its node snapshots.
-- Editing/advisory/model write workflows cannot run concurrently. First release is Unix/keyboard-only; mouse/clipboard protocol passthrough and pending-node rework are not implemented.
-
-See [embedded Helix](docs/helix.md) for target semantics, safety, and real-editor PTY tests.
+See [Helix setup/safety](docs/helix.md), [review discussion/publication](docs/review-editor.md), and [project tree](docs/project-tree.md).
 
 ## The workflow
 
