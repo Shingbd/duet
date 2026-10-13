@@ -71,11 +71,19 @@ Review now automatically shows full code, line numbers, lexical highlighting and
 
 See [editable review and contextual discussion](docs/review-editor.md) for controls, persistence and limitations. The default view is host-owned, not Helix; syntax coloring is lexical rather than full language-server semantics.
 
-## Optional embedded Helix
+## Project file tree + seamless Helix
+
+**3** shows a directory tree and directly opens the selected project file in real embedded Helix. **j/k**, **h/l**, Enter navigate/open; **Tab** focuses Helix and **Ctrl+]** returns to the tree. **r** refreshes, **z** toggles ignored files; Git changes are marked.
+
+Files switch in the same PTY, preserving unsaved buffers without automatic saves. Targets are backed up. Install/configure `hx`; editor configuration/LSP tools have account permissions, not sandbox permissions. Startup/restart only restores tree preferences, never automatically launches an editor. Review retains its separate node/file navigation.
+
+See [project tree and Helix](docs/project-tree.md) for limits and real multi-buffer PTY validation.
+
+## Optional review/conflict Helix
 
 Helix can run **inside the code/diff panel** using a real Unix PTY, without leaving Duet. Install `hx` with its runtime, or set `helix_path` / use `--helix /path/to/hx`.
 
-- **h → Enter** opens the selected target; **Ctrl+]** returns focus to Duet, **h** returns to Helix.
+- In review/conflict, **h → Enter** opens the selected target; **Ctrl+]** returns focus to Duet. Project tree uses **3 / Enter**, then **Tab** to focus; **h/l** are directory navigation there.
 - **:wq → Enter** saves/exits. No automatic commit, approval, model call, or merge.
 - Project code edits actual main files after backup. Review editing currently requires a fully approved, unmerged task and creates a separate integration revision, not a mutation of its node snapshots.
 - Editing/advisory/model write workflows cannot run concurrently. First release is Unix/keyboard-only; mouse/clipboard protocol passthrough and pending-node rework are not implemented.
@@ -158,7 +166,7 @@ your-project/.duet/
 
 The verification Runner and fixed-version test evidence are **not yet implemented**. Acceptance criteria remain unverified unless independently recorded; external maintenance tests do not change node verification status.
 
-Also pending: arbitrary historical-node rework, original Pi session/queue recovery, independent review agents, multi-agent scheduling, background startup/snapshotting, and an OS sandbox. Baseline browsing currently loads the first 80 files, up to 1 MiB per file; node-change review is not subject to the 80-file limit.
+Also pending: arbitrary historical-node rework, original Pi session/queue recovery, independent review agents, multi-agent scheduling, background startup/snapshotting, and an OS sandbox. The fallback fixed-baseline reader loads the first 80 files, up to 1 MiB per file; project tree navigation supports up to 5000 entries, and node-change review has no 80-file limit.
 
 ## Development
 
@@ -176,6 +184,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 
 ## Documentation
 
+- [Project tree and seamless Helix — bilingual](docs/project-tree.md)
 - [Editable review and contextual AI — bilingual](docs/review-editor.md)
 - [Embedded Helix — bilingual](docs/helix.md)
 - [Configuration reference — bilingual](docs/configuration.md)

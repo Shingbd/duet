@@ -372,7 +372,8 @@ format!(
     match &app.mode {
         Mode::ConfirmEmbeddedEditor { selection } => {
             let target = match selection {
-                crate::embedded::Selection::Project { .. } => {
+                crate::embedded::Selection::ProjectFile { .. }
+                | crate::embedded::Selection::Project { .. } => {
                     "将编辑主项目实际工作文件（可能含未提交内容），不是只读快照；先备份，不自动提交。"
                 }
                 crate::embedded::Selection::Review { .. } => {
@@ -833,6 +834,64 @@ format!(
 }
 
 fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    if app.view == View::Project && !app.project_tree.entries.is_empty() {
+        let rows = app.project_tree.visible();
+        let selected = rows
+            .iter()
+            .position(|e| e.path == app.project_tree.selected)
+            .unwrap_or(0);
+        let start = selected.saturating_sub(area.height.saturating_sub(3) as usize);
+        let lines = rows
+            .iter()
+            .skip(start)
+            .take(area.height.saturating_sub(2) as usize)
+            .map(|e| {
+                let depth = e.path.matches('/').count();
+                let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+                let icon = if e.directory {
+                    if app.project_tree.expanded.contains(&e.path) {
+                        "▾"
+                    } else {
+                        "▸"
+                    }
+                } else {
+                    " "
+                };
+                let color = match e.status {
+                    'A' | '?' => theme.good,
+                    'D' => theme.removed,
+                    'M' => theme.warning,
+                    _ => theme.text,
+                };
+                let mut style = Style::default().fg(color);
+                if e.path == app.project_tree.selected {
+                    style = style.bg(theme.border).add_modifier(Modifier::BOLD);
+                }
+                ListItem::new(Line::from(Span::styled(
+                    format!(
+                        "{}{} {} {}",
+                        "  ".repeat(depth.min(16)),
+                        icon,
+                        e.status,
+                        safe_text(name)
+                    ),
+                    style,
+                )))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            List::new(lines).block(theme.block(
+                if app.project_tree.truncated {
+                    " 文件树 · 截断 5000 项 "
+                } else {
+                    " 文件树 · r 刷新 · z 忽略项 "
+                },
+                app.panel == Panel::Queue,
+            )),
+            area,
+        );
+        return;
+    }
     if app.view == View::Tasks {
         task_tree(frame, app, area, theme);
         return;
@@ -1966,7 +2025,9 @@ fn review_chat_panel(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
 }
 
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
-    if let Some(screen) = &app.editor_screen {
+    if let Some(screen) = &app.editor_screen
+        && (!app.editor_project || app.view == View::Project)
+    {
         render_editor(frame, screen, area, app.editor_focused, theme);
         return;
     }

@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
         subprocess.run(["git", "-C", directory, *args], check=True, stdout=subprocess.DEVNULL)
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
-    process = subprocess.Popen([str(binary), "open", directory], stdin=slave, stdout=slave,
+    process = subprocess.Popen([str(binary), "--helix", str(project/"missing-hx"), "open", directory], stdin=slave, stdout=slave,
                                stderr=slave, env={**os.environ, "TERM": "xterm-256color"})
 
     def drain(seconds):
@@ -50,17 +50,15 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
         drain(0.6)
         send(b"3")  # Baseline file navigation belongs to the project view.
         send(b"jJK")
-        assert state()[1] == 1
+        assert state()[0]["project_tree_selected"] == "b.rs" and state()[1] == 0
         send(b"jk")
-        assert state()[1] == 1
+        assert state()[0]["project_tree_selected"] == "a.rs"
+        send(b"k")
+        assert state()[0]["project_tree_selected"] == "a.rs"
+        send(b"\tjJK")
+        assert state()[0]["panel"] == "Reader" and state()[1] == 1
         send(b"k")
         assert state()[1] == 0
-        send(b"\t\tj")
-        assert state()[0]["selected"][1] == "b.rs"
-        send(b"K")
-        assert state()[0]["selected"][1] == "b.rs"
-        send(b"k")
-        assert state()[0]["selected"][1] == "a.rs"
         send(b"fj")
         assert state()[0]["panel"] == "Reader" and state()[1] == 1
         send(b"\t")

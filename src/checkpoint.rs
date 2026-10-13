@@ -483,6 +483,68 @@ impl Repository {
         Ok(!self.git(&["status", "--porcelain"], None)?.is_empty())
     }
 
+    pub fn project_entries(&self, ignored: bool) -> Result<Vec<(String, char)>> {
+        let mut files = self
+            .git(
+                &[
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ],
+                None,
+            )?
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(|p| (p.to_string(), ' '))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if ignored {
+            for path in self
+                .git(
+                    &[
+                        "ls-files",
+                        "-z",
+                        "--others",
+                        "--ignored",
+                        "--exclude-standard",
+                    ],
+                    None,
+                )?
+                .split('\0')
+                .filter(|p| !p.is_empty())
+            {
+                files.entry(path.into()).or_insert('!');
+            }
+        }
+        let status = self.git(
+            &[
+                "-c",
+                "core.fsmonitor=false",
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+            ],
+            None,
+        )?;
+        for entry in status.split('\0').filter(|p| p.len() >= 4) {
+            let code = if entry.starts_with("??") {
+                '?'
+            } else if entry[..2].contains('D') {
+                'D'
+            } else if entry[..2].contains('A') {
+                'A'
+            } else {
+                'M'
+            };
+            files.insert(entry[3..].into(), code);
+        }
+        files.retain(|path, _| !path.split('/').any(|part| matches!(part, ".git" | ".duet")));
+        Ok(files.into_iter().collect())
+    }
     pub fn files(&self, snapshot: &Snapshot) -> Result<Vec<String>> {
         let output = self.git(
             &["ls-tree", "-r", "-z", "--name-only", &snapshot.commit],

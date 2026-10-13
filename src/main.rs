@@ -331,6 +331,12 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut editor: Option<duet_workbench::editing::Session> = None;
     let mut review_runtime = duet_workbench::review_chat::Runtime::default();
     let review_repo = Repository::open(store.directory().parent().unwrap()).ok();
+    if let Err(error) = app
+        .project_tree
+        .refresh(store.directory().parent().unwrap())
+    {
+        app.status = format!("文件树不可用：{error}");
+    }
     loop {
         if review_runtime.poll(&mut app, &mut store)? {
             redraw = true;
@@ -514,6 +520,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             && matches!(key.code, crossterm::event::KeyCode::Char(']' | '5'))
                         {
                             app.editor_focused = false;
+                            app.panel = duet_workbench::app::Panel::Queue;
                             app.status =
                                 "焦点回 Duet · h 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
                                     .into();
@@ -575,12 +582,59 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     app.status = format!("编辑器停止，改动保留，捕获未完成：{error}");
                 }
             }
+            if std::mem::take(&mut app.requested_tree_refresh)
+                && let Err(error) = app
+                    .project_tree
+                    .refresh(store.directory().parent().unwrap())
+            {
+                app.status = format!("文件树刷新失败：{error}");
+            }
+            if let Some(mut path) = app.requested_project_open.take() {
+                if path.is_empty()
+                    || !app
+                        .project_tree
+                        .entries
+                        .iter()
+                        .any(|e| e.path == path && !e.directory)
+                {
+                    path = app
+                        .project_tree
+                        .entries
+                        .iter()
+                        .find(|e| !e.directory && e.status != 'D')
+                        .map(|e| e.path.clone())
+                        .unwrap_or_default();
+                }
+                if !path.is_empty() {
+                    app.project_tree.reveal(&path);
+                    if let Some(session) = &mut editor {
+                        match duet_workbench::editing::switch_project(session, &store, &path) {
+                            Ok(()) => {
+                                app.status =
+                                    format!("Helix 打开 {path} · 原缓冲区保留，未自动保存");
+                                app.panel = duet_workbench::app::Panel::Queue;
+                                app.editor_focused = false;
+                            }
+                            Err(error) => app.status = format!("未切换文件：{error}"),
+                        }
+                    } else {
+                        app.requested_editor =
+                            Some(duet_workbench::embedded::Selection::ProjectFile { path });
+                    }
+                }
+            }
             if let Some(selection) = app.requested_editor.take() {
+                let seamless = matches!(
+                    &selection,
+                    duet_workbench::embedded::Selection::ProjectFile { .. }
+                );
                 let result = (|| -> Result<()> {
                     ensure!(editor.is_none(), "编辑器已在运行，h 返回");
                     ensure!(
-                        advisor.is_none() && coding.as_ref().is_none_or(|c| c.is_finished()),
-                        "请先结束 AI 执行；人工编辑与模型写入互斥"
+                        advisor.is_none()
+                            && review_runtime.chat.is_none()
+                            && coding.as_ref().is_none_or(|c| c.is_finished()),
+                        "请先结束 AI 执行/讨论；人工编辑器与模型运行互斥"
                     );
                     let size = terminal.size()?;
                     let (rows, cols) = ui::editor_size(
@@ -591,6 +645,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         duet_workbench::editing::start(selection, &mut app, &store, rows, cols)?;
                     app.editor_screen = Some(session.terminal.screen().clone());
                     editor = Some(session);
+                    if seamless {
+                        app.panel = duet_workbench::app::Panel::Queue;
+                        app.editor_focused = false;
+                    }
                     Ok(())
                 })();
                 if let Err(error) = result {

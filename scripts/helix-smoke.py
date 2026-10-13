@@ -18,14 +18,14 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
  def send(data):os.write(master,data);drain(.25)
  def clean():return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',output.decode(errors='replace'))
  try:
-  drain(.5);send(b'3h');send(b'\x1b');assert source.read_text()=='original file\n'
-  send(b'h\r');drain(2);assert 'HELIX' in clean()
+  drain(.5);send(b'3');drain(2);assert source.read_text()=='original file\n'
+  assert 'HELIX' in clean();send(b'\t')
   # Helix insert mode. Duet must forward q/i/: rather than treating them as its shortcuts.
   send(b'iedited in embedded helix ');send(b'\x1b')
   send(b'\x1d');assert process.poll() is None
   send(b'q');assert process.poll() is None # Host termination confirmation, not an editor q.
   send(b'\x1b')
-  send(b'h');drain(.2)
+  send(b'\t');drain(.2)
   fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',28,96,0,0));drain(.5)
   send(b':wq\r');drain(1)
   assert source.read_text().startswith('edited in embedded helix '),source.read_text()

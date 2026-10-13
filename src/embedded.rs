@@ -9,6 +9,9 @@ use std::{
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
+    ProjectFile {
+        path: String,
+    },
     Project {
         path: String,
         version: String,
@@ -26,7 +29,9 @@ pub enum Selection {
 impl Selection {
     pub fn path(&self) -> &str {
         match self {
-            Self::Project { path, .. } | Self::Review { path, .. } => path,
+            Self::ProjectFile { path } | Self::Project { path, .. } | Self::Review { path, .. } => {
+                path
+            }
             Self::Conflict { draft, index } => {
                 draft.conflicts.get(*index).map_or("", String::as_str)
             }

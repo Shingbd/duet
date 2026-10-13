@@ -153,6 +153,9 @@ pub struct TaskSelection {
 }
 
 pub struct App {
+    pub project_tree: crate::file_tree::Tree,
+    pub requested_tree_refresh: bool,
+    pub requested_project_open: Option<String>,
     pub config: crate::config::Config,
     pub review_buffers: Vec<crate::review_editor::Buffer>,
     pub review_revision: u64,
@@ -167,6 +170,7 @@ pub struct App {
     pub review_chat_busy: bool,
     pub editor_screen: Option<vt100::Screen>,
     pub editor_focused: bool,
+    pub editor_project: bool,
     pub requested_editor: Option<crate::embedded::Selection>,
     pub requested_editor_stop: bool,
     pub name: String,
@@ -300,6 +304,9 @@ impl App {
 
     pub fn empty(keymap: Keymap) -> Self {
         Self {
+            project_tree: crate::file_tree::Tree::default(),
+            requested_tree_refresh: false,
+            requested_project_open: None,
             config: crate::config::Config::default(),
             review_buffers: Vec::new(),
             review_revision: 0,
@@ -314,6 +321,7 @@ impl App {
             review_chat_busy: false,
             editor_screen: None,
             editor_focused: false,
+            editor_project: false,
             requested_editor: None,
             requested_editor_stop: false,
             name: "工作台".into(),
@@ -1450,6 +1458,44 @@ impl App {
             }
             return;
         }
+        if self.view == View::Project
+            && self.panel == Panel::Queue
+            && !self.project_tree.entries.is_empty()
+        {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => self.project_tree.move_by(1),
+                KeyCode::Char('k') | KeyCode::Up => self.project_tree.move_by(-1),
+                KeyCode::Char('h') | KeyCode::Left => self.project_tree.collapse(),
+                KeyCode::Char('l') | KeyCode::Right => self.project_tree.expand(),
+                KeyCode::Enter => {
+                    if self.project_tree.entry().is_some_and(|e| e.directory) {
+                        if self
+                            .project_tree
+                            .expanded
+                            .contains(&self.project_tree.selected)
+                        {
+                            self.project_tree.collapse();
+                        } else {
+                            self.project_tree.expand();
+                        }
+                    } else {
+                        self.requested_project_open = Some(self.project_tree.selected.clone());
+                    }
+                }
+                KeyCode::Char('r') => self.requested_tree_refresh = true,
+                KeyCode::Char('z') => {
+                    self.project_tree.show_ignored = !self.project_tree.show_ignored;
+                    self.requested_tree_refresh = true;
+                }
+                _ => {
+                    if let Some(action) = self.keymap.resolve(key) {
+                        self.act(action);
+                    }
+                    return;
+                }
+            }
+            return;
+        }
         if let Some(action) = self.keymap.resolve(key) {
             self.act(action);
         }
@@ -1462,6 +1508,10 @@ impl App {
             Action::Project => {
                 let path = self.current().map(|i| i.title.clone());
                 self.view = View::Project;
+                self.panel = Panel::Queue;
+                self.editor_focused = false;
+                self.requested_tree_refresh = true;
+                self.requested_project_open = Some(path.clone().unwrap_or_default());
                 let indices = self.visible_file_indices();
                 if let Some(&index) = indices
                     .iter()
@@ -1482,6 +1532,10 @@ impl App {
                     }
                     _ => Panel::Queue,
                 };
+                if self.editor_screen.is_some() {
+                    self.editor_focused = self.panel == Panel::Reader
+                        && (!self.editor_project || self.view == View::Project);
+                }
             }
             Action::Up | Action::Down => {
                 if self.panel == Panel::Queue {
@@ -1561,6 +1615,9 @@ impl App {
             }
             Action::EmbeddedEditor => {
                 if self.editor_screen.is_some() {
+                    if self.editor_project {
+                        self.view = View::Project;
+                    }
                     self.editor_focused = true;
                     return;
                 }

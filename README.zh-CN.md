@@ -71,7 +71,15 @@ cargo build --release
 
 操作、持久化和边界见[可编辑审核与上下文 AI](docs/review-editor.md)。默认视图由 Duet 持有缓冲区，不是 Helix；高亮为基础词法着色，不是完整语言服务器语义。
 
-## 可选框内 Helix 编辑
+## 项目文件树与无缝 Helix
+
+**3** 显示目录文件树，并直接在代码框中打开真正 Helix，无需 h。侧栏 **j/k** 选择、**h/l** 折叠/展开，Enter 打开；**Tab** 进入编辑器，**Ctrl+]** 回树；**r** 刷新，**z** 切换忽略项，标记 Git 状态。
+
+文件在同一 PTY 中切换，保留未保存缓冲区，不自动保存；目标先备份。需安装或配置 `hx`，其配置/LSP 具有账号权限，不是沙箱。打开/重启工作台仅恢复树状态，不自动启动编辑器；审核仍保留独立任务/节点导航。
+
+边界及真实多缓冲区测试见[项目文件树与 Helix](docs/project-tree.md)。
+
+## 可选审核／冲突 Helix 编辑
 
 Helix 通过真实 Unix PTY **运行在代码/diff 框内**，无需离开工作台。安装包含 runtime 的 `hx`，或配置 `helix_path` / 使用 `--helix /path/to/hx`。
 
@@ -176,6 +184,7 @@ python3 scripts/merge-smoke.py target/release/duet-workbench
 
 ## 更多文档
 
+- [项目文件树与无缝 Helix（中英）](docs/project-tree.md)
 - [可编辑审核与上下文 AI（中英）](docs/review-editor.md)
 - [内嵌 Helix（中英）](docs/helix.md)
 - [配置说明（中英）](docs/configuration.md)

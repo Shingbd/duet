@@ -6,6 +6,7 @@ pub mod conflict;
 pub mod conflict_ai;
 pub mod editing;
 pub mod embedded;
+pub mod file_tree;
 pub mod keymap;
 pub mod markdown;
 pub mod merge;

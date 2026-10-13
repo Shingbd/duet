@@ -48,6 +48,12 @@ struct SavedUi {
     task_selection: Option<crate::app::TaskSelection>,
     #[serde(default)]
     review_version: Option<String>,
+    #[serde(default)]
+    project_tree_selected: String,
+    #[serde(default)]
+    project_tree_expanded: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    project_show_ignored: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -634,6 +640,9 @@ impl WorkspaceStore {
             app.task_evidence_scroll = saved.task_evidence_scroll;
             app.task_selection = saved.task_selection;
             app.review_version = saved.review_version;
+            app.project_tree.selected = saved.project_tree_selected;
+            app.project_tree.expanded = saved.project_tree_expanded;
+            app.project_tree.show_ignored = saved.project_show_ignored;
             saved_selection = saved.selected;
         }
         let latest: Option<(String, String, String, String, Option<String>)> = self
@@ -818,6 +827,9 @@ impl WorkspaceStore {
             task_evidence_scroll: app.task_evidence_scroll,
             task_selection: app.task_selection.clone(),
             review_version: app.review_version.clone(),
+            project_tree_selected: app.project_tree.selected.clone(),
+            project_tree_expanded: app.project_tree.expanded.clone(),
+            project_show_ignored: app.project_tree.show_ignored,
         };
         let encoded = serde_json::to_string(&saved)?;
         let changed_ui = self.last_ui.as_ref() != Some(&encoded);

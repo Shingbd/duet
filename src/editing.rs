@@ -26,7 +26,7 @@ pub struct Session {
     pub terminal: crate::embedded::PtyEditor,
     pub target: Target,
 }
-fn safe_file(root: &Path, path: &str) -> Result<PathBuf> {
+pub fn safe_file(root: &Path, path: &str) -> Result<PathBuf> {
     validate_path(path)?;
     let mut file = root.to_path_buf();
     for part in Path::new(path).components() {
@@ -85,9 +85,25 @@ pub fn start(
         })?
         .canonicalize()?;
     let root = store.directory().parent().context("缺少项目根目录")?;
-    let repo = Repository::open(root)?;
+    let project_repo = Repository::open(root).ok();
     let (target, cwd, path) = match selection {
+        Selection::ProjectFile { path } => {
+            ensure!(
+                app.view == View::Project && app.project_tree.selected == path,
+                "文件树选择已改变"
+            );
+            let file = safe_file(root, &path)?;
+            (
+                Target::Project {
+                    root: root.into(),
+                    path,
+                },
+                root.to_path_buf(),
+                file,
+            )
+        }
         Selection::Project { path, version } => {
+            let repo = project_repo.as_ref().context("固定项目版本需要 Git 仓库")?;
             ensure!(
                 app.view == View::Project
                     && app
@@ -114,6 +130,7 @@ pub fn start(
             path,
             version,
         } => {
+            let repo = project_repo.as_ref().context("审核编辑需要 Git 仓库")?;
             ensure!(
                 app.view == View::Review
                     && app
@@ -128,7 +145,7 @@ pub fn start(
                 .context("任务不存在")?;
             task.merge_ready()
                 .context("待审节点先完成审核；内嵌编辑审核代码仅用于已批准任务的最终集成修复")?;
-            let draft = conflict::prepare_edit(&repo, store, task, &path)?;
+            let draft = conflict::prepare_edit(repo, store, task, &path)?;
             let index = draft.conflicts.iter().position(|p| p == &path).unwrap();
             let cwd = conflict::worktree(store, &draft)?;
             let file = safe_file(&cwd, &path)?;
@@ -142,12 +159,13 @@ pub fn start(
             )
         }
         Selection::Conflict { draft, index } => {
+            let repo = project_repo.as_ref().context("集成编辑需要 Git 仓库")?;
             let task = app
                 .tasks
                 .iter()
                 .find(|t| t.id == draft.task_id)
                 .context("任务不存在")?;
-            let cwd = conflict::validate(&repo, store, task, &draft)?
+            let cwd = conflict::validate(repo, store, task, &draft)?
                 .root()
                 .to_path_buf();
             let path = draft.conflicts.get(index).context("文件不存在")?;
@@ -167,19 +185,66 @@ pub fn start(
         format!(
             "path={}\nmain_head={}\n",
             path.display(),
-            repo.baseline()?.commit
+            project_repo
+                .as_ref()
+                .and_then(|r| r.baseline().ok())
+                .map(|s| s.commit)
+                .unwrap_or_else(|| "no-committed-baseline".into())
         ),
     )?;
     let terminal = crate::embedded::PtyEditor::spawn(&executable, &cwd, &path, rows, cols)?;
     app.mode = Mode::Browse;
     app.panel = crate::app::Panel::Reader;
     app.editor_focused = true;
+    app.editor_project = matches!(target, Target::Project { .. });
     app.status = "Helix 在代码框内运行 · Ctrl+] 切回 Duet · :wq 保存退出 · 不自动合入".into();
     Ok(Session { terminal, target })
+}
+pub fn switch_project(session: &mut Session, store: &WorkspaceStore, path: &str) -> Result<()> {
+    let Target::Project {
+        root,
+        path: current,
+    } = &mut session.target
+    else {
+        anyhow::bail!("请先保存退出当前审核/冲突编辑器");
+    };
+    if current == path {
+        return Ok(());
+    }
+    ensure!(
+        !path.bytes().any(|b| matches!(b, 37 | 34 | 39 | 92)),
+        "特殊文件名不通过 Helix 命令行切换；请在 Helix 文件选择器中手动打开，原缓冲区保留"
+    );
+    let file = safe_file(root, path)?;
+    ensure!(
+        !file
+            .to_string_lossy()
+            .bytes()
+            .any(|b| matches!(b, 37 | 34 | 39 | 92)),
+        "项目目录含特殊插值字符；请在 Helix 文件选择器中手动切换，原缓冲区保留"
+    );
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let backup = store
+        .directory()
+        .join("backups")
+        .join(format!("helix-switch-{nonce}"));
+    conflict::private_dir(&backup)?;
+    fs::copy(&file, backup.join("before-file"))?;
+    fs::write(backup.join("target.txt"), file.to_string_lossy().as_bytes())?;
+    let quoted = file
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    session
+        .terminal
+        .send(format!("\u{1b}\u{1b}:open \"{quoted}\"\r").as_bytes())?;
+    *current = path.into();
+    Ok(())
 }
 pub fn finish(target: Target, success: bool, app: &mut App, store: &WorkspaceStore) -> Result<()> {
     app.editor_screen = None;
     app.editor_focused = false;
+    app.editor_project = false;
     match target {
         Target::Project { root, path } => {
             safe_file(&root, &path)?;

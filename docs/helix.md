@@ -2,6 +2,10 @@
 
 [English README](../README.md) · [中文首页](../README.zh-CN.md)
 
+Project entry **3** now uses [a project file tree and seamless Helix](project-tree.md): no h confirmation there; Tab focuses the editor, Ctrl+] returns to the tree, h/l navigate directories. This page's h-confirmation controls apply to optional review/conflict editing.
+
+项目入口 **3** 已接入[文件树与无缝 Helix](project-tree.md)，无需 h 确认；Tab 进入编辑器，Ctrl+] 回树，h/l 导航目录。本页 h 确认流程适用于审核/冲突可选编辑。
+
 The default review panel is now [a native editable review buffer with contextual AI](review-editor.md), not a Helix process. This page documents the optional Helix entry. Its PTY cannot supply exact cursor/selection/unsaved-buffer context to Duet.
 
 默认审核现在使用[原生可编辑缓冲区与上下文 AI](review-editor.md)，不是 Helix 进程。本页说明可选 Helix 入口，其 PTY 不向 Duet 提供精确光标、选区或未保存缓冲区。
