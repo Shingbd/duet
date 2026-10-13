@@ -303,6 +303,124 @@ fn opening_draft_detects_pending_lockfile_without_authorizing_or_capturing_it() 
     reopened.extra_paths.push("Cargo.lock".into());
     assert!(!reopened.needs_lockfile_permission());
 }
+
+fn editable_fixture(app_task: &TaskRecord, repo: &Repository) -> duet_workbench::app::App {
+    use duet_workbench::{
+        app::{App, TaskSelection, View},
+        keymap::Keymap,
+    };
+    let mut app = App::empty(Keymap::default());
+    app.tasks.push(app_task.clone());
+    app.task_selection = Some(TaskSelection {
+        task_id: app_task.id.clone(),
+        node_id: Some("two".into()),
+    });
+    let snapshot = repo
+        .resolve_snapshot(app_task.checkpoint.as_deref().unwrap())
+        .unwrap();
+    app.append_node_checkpoint(repo, &snapshot, &app_task.id, 1)
+        .unwrap();
+    app.view = View::Review;
+    app.review_version = Some(snapshot.commit.clone());
+    app.selected = app
+        .items
+        .iter()
+        .position(|i| i.title == "two.txt" && i.version == snapshot.commit)
+        .unwrap();
+    duet_workbench::review_workflow::prepare(&mut app, repo).unwrap();
+    app
+}
+#[test]
+fn native_publication_preserves_candidate_main_index_and_old_approval_and_restores_draft() {
+    use duet_workbench::{nodes::Review, review_workflow};
+    let (dir, mut store, task, candidate) = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    let original = task.nodes[1].clone();
+    let head = git(dir.path(), &["rev-parse", "HEAD"]);
+    fs::write(dir.path().join("base.txt"), "human staged change\n").unwrap();
+    git(dir.path(), &["add", "base.txt"]);
+    let index = fs::read(dir.path().join(".git/index")).unwrap();
+    let mut app = editable_fixture(&task, &repo);
+    app.current_buffer_mut()
+        .unwrap()
+        .paste("manual change\n")
+        .unwrap();
+    app.review_revision += 1;
+    store.save(&app).unwrap();
+    let mut restored = duet_workbench::app::App::empty(duet_workbench::keymap::Keymap::default());
+    store.restore(&mut restored).unwrap();
+    assert!(
+        restored
+            .review_buffers
+            .iter()
+            .any(|b| b.text.starts_with("manual change"))
+    );
+    assert!(!restored.review_chat_busy);
+    assert!(restored.requested_review_chat.is_none());
+    review_workflow::publish(&mut app, &mut store).unwrap();
+    assert_eq!(app.tasks[0].nodes[1].attempts[0], original.attempts[0]);
+    assert_eq!(app.tasks[0].nodes[1].review, Review::Pending);
+    assert!(app.tasks[0].nodes[1].reviewed_checkpoint.is_none());
+    assert_eq!(
+        fs::read_to_string(candidate.join("two.txt")).unwrap(),
+        "approved two\n"
+    );
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(dir.path().join(".git/index")).unwrap(), index);
+    let revised = repo
+        .resolve_snapshot(app.tasks[0].checkpoint.as_deref().unwrap())
+        .unwrap();
+    assert!(
+        repo.read(&revised, "two.txt")
+            .unwrap()
+            .starts_with("manual change")
+    );
+    assert!(app.tasks[0].merge_ready().is_err());
+}
+#[test]
+fn native_publication_refuses_scope_expansion_and_merged_history() {
+    let (dir, mut store, task, _) = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    let mut app = editable_fixture(&task, &repo);
+    app.current_buffer_mut().unwrap().paste("manual").unwrap();
+    app.tasks[0].nodes[1].contract.scope = vec!["other.txt".into()];
+    assert!(duet_workbench::review_workflow::publish(&mut app, &mut store).is_err());
+    assert_eq!(app.tasks[0].checkpoint, task.checkpoint);
+    app.tasks[0].state = TaskState::Merged;
+    assert!(duet_workbench::review_workflow::publish(&mut app, &mut store).is_err());
+}
+#[test]
+fn native_view_has_full_code_colored_diff_and_no_editor_process() {
+    use duet_workbench::{app::Panel, ui};
+    let (dir, _store, task, _) = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    let mut app = editable_fixture(&task, &repo);
+    app.panel = Panel::Reader;
+    assert!(app.editor_screen.is_none() && app.requested_editor.is_none());
+    app.current_buffer_mut()
+        .unwrap()
+        .paste("// human line\n")
+        .unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 36)).unwrap();
+    for light in [false, true] {
+        app.light = light;
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let cells = &terminal.backend().buffer().content;
+        let text = cells.iter().map(|c| c.symbol()).collect::<String>();
+        assert!(
+            text.contains("NORMAL")
+                && text.replace(' ', "").contains("人工草稿")
+                && text.contains("human line")
+                && text.contains("approved two")
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|c| c.symbol() == "+" && c.bg != ratatui::style::Color::Reset)
+        );
+    }
+}
+
 #[test]
 fn manual_review_edits_become_integration_revisions_not_node_reapprovals() {
     use duet_workbench::conflict;

@@ -329,7 +329,13 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut last_input = Instant::now();
     let mut advisor: Option<duet_workbench::conflict_ai::Advisor> = None;
     let mut editor: Option<duet_workbench::editing::Session> = None;
+    let mut review_runtime = duet_workbench::review_chat::Runtime::default();
+    let review_repo = Repository::open(store.directory().parent().unwrap()).ok();
     loop {
+        if review_runtime.poll(&mut app, &mut store)? {
+            redraw = true;
+            save_since.get_or_insert_with(Instant::now);
+        }
         if let Some(session) = &mut editor {
             let size = terminal.size()?;
             let (rows, cols) = ui::editor_size(
@@ -446,6 +452,27 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             save_since.get_or_insert_with(Instant::now);
         }
         if redraw {
+            if let Some(repo) = &review_repo
+                && let Err(error) = duet_workbench::review_workflow::prepare(&mut app, repo)
+            {
+                app.status = format!("审核编辑器不可用：{error}");
+            }
+            let size = terminal.size()?;
+            let (rows, cols) = ui::editor_size(
+                ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                app.fullscreen,
+            );
+            let chat_inline = app.review_chat_open && (app.fullscreen || size.width < 116);
+            if let Some(buffer) = app.current_buffer_mut() {
+                buffer.keep_visible(
+                    if chat_inline {
+                        (rows as usize * 65 / 100).saturating_sub(2)
+                    } else {
+                        (rows as usize).saturating_sub(1)
+                    },
+                    (cols as usize).saturating_sub(13),
+                );
+            }
             terminal.draw(|frame| renderer.draw(frame, &app))?;
             redraw = false;
         }
@@ -464,7 +491,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         if app.quit {
             break;
         }
-        let wait = if editor.is_some()
+        let wait = if review_runtime.chat.is_some()
+            || editor.is_some()
             || advisor.is_some()
             || coding.as_ref().is_some_and(|run| !run.is_finished())
                 && app.run.status != duet_workbench::rpc::RunStatus::Paused
@@ -483,7 +511,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         if key
                             .modifiers
                             .contains(crossterm::event::KeyModifiers::CONTROL)
-                            && key.code == crossterm::event::KeyCode::Char(']')
+                            && matches!(key.code, crossterm::event::KeyCode::Char(']' | '5'))
                         {
                             app.editor_focused = false;
                             app.status =
@@ -500,10 +528,21 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     }
                     Event::Key(key) => app.handle_key(key),
                     Event::Paste(text) => {
-                        if let Mode::Input { text: input, .. } | Mode::Message { text: input } =
-                            &mut app.mode
+                        if let Mode::Input { text: input, .. }
+                        | Mode::Message { text: input }
+                        | Mode::ReviewChat { text: input } = &mut app.mode
                         {
                             input.push_str(&text);
+                        } else if app.view == duet_workbench::app::View::Review
+                            && app.panel == duet_workbench::app::Panel::Reader
+                            && app.editor_screen.is_none()
+                            && matches!(app.mode, Mode::Browse)
+                            && let Some(buffer) = app.current_buffer_mut()
+                        {
+                            if let Err(error) = buffer.paste(&text) {
+                                app.status = error.to_string();
+                            }
+                            app.review_revision = app.review_revision.wrapping_add(1);
                         }
                     }
                     _ => {}
@@ -515,6 +554,14 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             last_input = Instant::now();
             redraw = true;
             save_since.get_or_insert(last_input);
+            review_runtime.interact(
+                &mut app,
+                &mut store,
+                &config.agent,
+                advisor.is_some()
+                    || editor.is_some()
+                    || coding.as_ref().is_some_and(|c| !c.is_finished()),
+            )?;
             if std::mem::take(&mut app.requested_editor_stop)
                 && let Some(mut session) = editor.take()
             {
@@ -994,6 +1041,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             }
         }
     }
+    review_runtime.stop()?;
     if let Some(mut a) = advisor.take() {
         a.stop()?;
         app.agent_connected = false;

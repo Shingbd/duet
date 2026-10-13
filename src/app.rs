@@ -35,6 +35,12 @@ pub enum Mode {
         selection: crate::embedded::Selection,
     },
     ConfirmStopEditor,
+    ReviewChat {
+        text: String,
+    },
+    ConfirmReviewPatch {
+        proposal: Box<crate::review_editor::Proposal>,
+    },
     Help,
     Input {
         search: bool,
@@ -148,6 +154,17 @@ pub struct TaskSelection {
 
 pub struct App {
     pub config: crate::config::Config,
+    pub review_buffers: Vec<crate::review_editor::Buffer>,
+    pub review_revision: u64,
+    pub review_chat_open: bool,
+    pub review_chat_scroll: Option<usize>,
+    pub review_chat_context: Option<crate::review_editor::Context>,
+    pub review_messages: Vec<crate::review_editor::ChatMessage>,
+    pub review_chat_text: String,
+    pub review_proposal: Option<crate::review_editor::Proposal>,
+    pub requested_review_chat: Option<(crate::review_editor::Context, String)>,
+    pub requested_review_publish: bool,
+    pub review_chat_busy: bool,
     pub editor_screen: Option<vt100::Screen>,
     pub editor_focused: bool,
     pub requested_editor: Option<crate::embedded::Selection>,
@@ -284,6 +301,17 @@ impl App {
     pub fn empty(keymap: Keymap) -> Self {
         Self {
             config: crate::config::Config::default(),
+            review_buffers: Vec::new(),
+            review_revision: 0,
+            review_chat_open: false,
+            review_chat_scroll: None,
+            review_chat_context: None,
+            review_messages: Vec::new(),
+            review_chat_text: String::new(),
+            review_proposal: None,
+            requested_review_chat: None,
+            requested_review_publish: false,
+            review_chat_busy: false,
             editor_screen: None,
             editor_focused: false,
             requested_editor: None,
@@ -474,7 +502,8 @@ impl App {
         task_id: &str,
         index: usize,
     ) -> Result<()> {
-        let follows = self.view == View::Review
+        let follows = !self.current_buffer().is_some_and(|b| b.changed())
+            && self.view == View::Review
             && self.task_selection.as_ref().is_some_and(|s| {
                 s.task_id == task_id
                     && s.node_id.as_deref()
@@ -804,6 +833,14 @@ impl App {
             self.status = "节点尚无检查点".into();
             return;
         };
+        if self
+            .review_buffers
+            .iter()
+            .any(|b| b.task_id == selection.task_id && b.version == checkpoint && b.changed())
+        {
+            self.status="当前交付有人工草稿修改：先在代码区 Ctrl+s 发布新固定修订，再批准；不会批准可变缓冲区".into();
+            return;
+        }
         if node.execution != Execution::Implemented || node.checkpoint() != Some(checkpoint) {
             self.status = "只能批准当前已完成节点版本；旧版本或失败节点不能放行".into();
             return;
@@ -915,7 +952,7 @@ impl App {
             self.selected = *index;
         }
         self.view = View::Review;
-        self.panel = Panel::Reader;
+        self.panel = Panel::Queue;
         self.page = Page::Code;
         self.filter.clear();
     }
@@ -933,11 +970,174 @@ impl App {
         true
     }
 
+    pub fn has_review_draft(&self, task: &TaskRecord) -> bool {
+        self.review_buffers.iter().any(|b| {
+            b.task_id == task.id
+                && b.changed()
+                && (task.checkpoint.as_deref() == Some(b.version.as_str())
+                    || task
+                        .nodes
+                        .iter()
+                        .any(|n| n.review_snapshot() == Some(b.version.as_str())))
+        })
+    }
+    pub fn current_buffer(&self) -> Option<&crate::review_editor::Buffer> {
+        let item = self.current()?;
+        let task = self.selected_task()?;
+        let node = self
+            .task_selection
+            .as_ref()
+            .and_then(|s| s.node_id.as_deref());
+        self.review_buffers
+            .iter()
+            .find(|b| b.matches(&task.id, node, &item.title, &item.version))
+    }
+    pub fn current_buffer_mut(&mut self) -> Option<&mut crate::review_editor::Buffer> {
+        let item = self.current()?;
+        let task = self.selected_task()?.id.clone();
+        let path = item.title.clone();
+        let version = item.version.clone();
+        let node = self.task_selection.as_ref().and_then(|s| s.node_id.clone());
+        self.review_buffers
+            .iter_mut()
+            .find(|b| b.matches(&task, node.as_deref(), &path, &version))
+    }
+    pub fn open_review_chat(&mut self) {
+        if let Some(buffer) = self.current_buffer() {
+            self.review_chat_context = Some(buffer.context());
+            self.review_chat_open = true;
+            self.mode = Mode::ReviewChat {
+                text: String::new(),
+            };
+            self.panel = Panel::Evidence;
+        }
+    }
     pub fn handle_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        if self.view == View::Review
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('x')
+        {
+            self.cancel_requested = true;
+            return;
+        }
+        if self.view == View::Review
+            && self.review_chat_open
+            && self.panel == Panel::Evidence
+            && matches!(self.mode, Mode::Browse)
+        {
+            match key.code {
+                KeyCode::Char('i') => {
+                    self.mode = Mode::ReviewChat {
+                        text: String::new(),
+                    };
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.panel = Panel::Reader;
+                    return;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.review_chat_scroll =
+                        Some(self.review_chat_scroll.unwrap_or(0).saturating_add(1));
+                    return;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.review_chat_scroll =
+                        Some(self.review_chat_scroll.unwrap_or(0).saturating_sub(1));
+                    return;
+                }
+                KeyCode::Home => {
+                    self.review_chat_scroll = Some(0);
+                    return;
+                }
+                KeyCode::End => {
+                    self.review_chat_scroll = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.view == View::Review
+            && self.editor_screen.is_none()
+            && matches!(self.mode, Mode::Browse)
+        {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+                self.open_review_chat();
+                return;
+            }
+            if self.panel == Panel::Reader && self.current_buffer().is_some() {
+                let action = self.current_buffer_mut().unwrap().handle(key);
+                self.review_revision = self.review_revision.wrapping_add(1);
+                match action {
+                    Ok(crate::review_editor::Action::Ask) => self.open_review_chat(),
+                    Ok(crate::review_editor::Action::Publish) => {
+                        self.requested_review_publish = true
+                    }
+                    Ok(crate::review_editor::Action::Apply) => {
+                        if let Some(proposal) = &self.review_proposal {
+                            self.mode = Mode::ConfirmReviewPatch {
+                                proposal: Box::new(proposal.clone()),
+                            };
+                        } else {
+                            self.status = "尚无可应用补丁；Ctrl+g 提问，AI 默认只讨论".into();
+                        }
+                    }
+                    Ok(crate::review_editor::Action::Workbench) => self.panel = Panel::Queue,
+                    Err(error) => self.status = error.to_string(),
+                    _ => {}
+                }
+                return;
+            }
+        }
         match &mut self.mode {
+            Mode::ReviewChat { text } => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.mode = Mode::Browse;
+                        self.panel = Panel::Reader;
+                    }
+                    KeyCode::Enter if !text.trim().is_empty() => {
+                        if let Some(context) = self.review_chat_context.clone() {
+                            self.requested_review_chat = Some((context, std::mem::take(text)));
+                            self.mode = Mode::Browse;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        text.push(c)
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            Mode::ConfirmReviewPatch { proposal } => {
+                if key.code == KeyCode::Enter {
+                    let proposal = proposal.clone();
+                    let result = self
+                        .current_buffer_mut()
+                        .ok_or_else(|| anyhow::anyhow!("缓冲区选择变化"))
+                        .and_then(|b| b.apply(&proposal));
+                    self.status = match result {
+                        Ok(()) => "建议已写入人工草稿；未批准/发布/合入".into(),
+                        Err(e) => e.to_string(),
+                    };
+                    self.review_revision = self.review_revision.wrapping_add(1);
+                    self.mode = Mode::Browse;
+                    self.panel = Panel::Reader;
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Browse;
+                }
+                return;
+            }
             Mode::Message { text } => {
                 match key.code {
                     KeyCode::Esc => self.mode = Mode::Browse,
@@ -1398,6 +1598,11 @@ impl App {
             }
             Action::StartTask if self.view == View::Tasks => {
                 if let Some(task) = self.selected_task() {
+                    if self.has_review_draft(task) {
+                        self.status =
+                            "任务有人工审核草稿；先发布新固定版本，未授权覆盖草稿继续".into();
+                        return;
+                    }
                     match task.startable() {
                         Ok(()) => {
                             self.mode = Mode::ConfirmStart {
@@ -1437,6 +1642,11 @@ impl App {
             Action::RetryTask => self.status = "请在任务/审核界面选中失败任务再重试".into(),
             Action::MergeTask if matches!(self.view, View::Tasks | View::Review) => {
                 if let Some(task) = self.selected_task() {
+                    if self.has_review_draft(task) {
+                        self.status =
+                            "人工审核草稿尚未发布；代码区 Ctrl+s 发布再批准，未合入旧版本".into();
+                        return;
+                    }
                     match task.merge_ready() {
                         Ok(()) => self.requested_merge_preview = Some(task.id.clone()),
                         Err(e) => self.status = format!("不能合并：{e}"),
@@ -1495,6 +1705,7 @@ impl App {
             "delete-selected" => self.act(Action::DeleteSelected),
             "merge-task" => self.act(Action::MergeTask),
             "retry-task" => self.act(Action::RetryTask),
+            "ask" => self.open_review_chat(),
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,

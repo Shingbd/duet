@@ -191,7 +191,9 @@ fn draw_cached(
             Constraint::Length(2),
         ])
         .split(area);
-    let badge = if app.branch.is_empty() {
+    let badge = if app.view == View::Review && app.current_buffer().is_some() {
+        app.tr("审核草稿 · 主项目不写", "Review draft · main untouched")
+    } else if app.branch.is_empty() {
         app.tr("未打开项目", "No project")
     } else {
         app.tr("项目只读浏览", "Read-only project")
@@ -398,6 +400,19 @@ format!(
                 10,
             );
         }
+        Mode::ReviewChat { .. } => {}
+        Mode::ConfirmReviewPatch { proposal } => popup(
+            frame,
+            theme,
+            " AI 建议 · 只应用到人工草稿 ",
+            vec![
+                Line::from("Enter 明确应用 / Esc 取消；不会发布、批准、测试或合入"),
+                Line::from(format!("- {}", safe_text(&proposal.old))),
+                Line::from(format!("+ {}", safe_text(&proposal.new))),
+            ],
+            110,
+            10,
+        ),
         Mode::ConfirmStopEditor => popup(
             frame,
             theme,
@@ -1727,9 +1742,245 @@ fn render_editor(
     }
 }
 
+fn native_review(
+    frame: &mut Frame,
+    app: &App,
+    buffer: &crate::review_editor::Buffer,
+    area: Rect,
+    theme: Theme,
+) {
+    let focused = app.panel == Panel::Reader && matches!(app.mode, Mode::Browse);
+    let label = if buffer.insert { "INSERT" } else { "NORMAL" };
+    let comparison = if buffer.human_diff {
+        "人工 vs 固定交付"
+    } else {
+        "草稿 vs 节点基线"
+    };
+    let title = format!(
+        " {} · {}{} · {}:{} · {} ",
+        safe_text(&buffer.path),
+        label,
+        if buffer.changed() {
+            " · 人工草稿未发布"
+        } else {
+            " · 固定交付"
+        },
+        buffer.line() + 1,
+        buffer.column() + 1,
+        comparison
+    );
+    let block = theme.block(title, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let height = inner.height.saturating_sub(1);
+    let gutter = 13_u16.min(inner.width);
+    let starts = std::iter::once(0)
+        .chain(buffer.text.match_indices('\n').map(|(p, _)| p + 1))
+        .collect::<Vec<_>>();
+    for (row, data) in buffer
+        .rows
+        .iter()
+        .skip(buffer.top)
+        .take(height as usize)
+        .enumerate()
+    {
+        let background = match data.tag {
+            similar::ChangeTag::Insert => {
+                if app.light {
+                    Color::Rgb(222, 244, 230)
+                } else {
+                    Color::Rgb(25, 49, 40)
+                }
+            }
+            similar::ChangeTag::Delete => {
+                if app.light {
+                    Color::Rgb(253, 228, 233)
+                } else {
+                    Color::Rgb(59, 30, 40)
+                }
+            }
+            _ => theme.bg,
+        };
+        let base = Style::default().bg(background).fg(theme.text);
+        let marker = match data.tag {
+            similar::ChangeTag::Insert => '+',
+            similar::ChangeTag::Delete => '-',
+            _ => ' ',
+        };
+        let number = |line: Option<usize>| line.map(|n| (n + 1).to_string()).unwrap_or_default();
+        let prefix = format!(
+            "{:>4} {:>4} {}{} ",
+            number(data.old),
+            number(data.new),
+            marker,
+            if data.human { '*' } else { ' ' }
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(prefix, base.fg(theme.muted)))),
+            Rect::new(inner.x, inner.y + row as u16, gutter, 1),
+        );
+        let mut cells = 0;
+        let mut offset = data.new.and_then(|n| starts.get(n).copied());
+        let mut spans = Vec::new();
+        for (text, role) in crate::review_editor::tokens(&data.text) {
+            let fg = match role {
+                1 => theme.accent,
+                2 => theme.good,
+                3 => theme.muted,
+                4 => theme.warning,
+                _ => theme.text,
+            };
+            for grapheme in text.graphemes(true) {
+                let display = if grapheme == "\t" {
+                    "    ".to_string()
+                } else {
+                    safe_text(grapheme)
+                };
+                let width = display.width();
+                let end = cells + width;
+                let selected = offset.is_some_and(|at| {
+                    buffer
+                        .selected()
+                        .is_some_and(|(a, b)| at < b && at + grapheme.len() > a)
+                });
+                let style = if selected {
+                    base.fg(fg).add_modifier(Modifier::REVERSED)
+                } else {
+                    base.fg(fg)
+                };
+                if cells >= buffer.left && end <= buffer.left + (inner.width - gutter) as usize {
+                    spans.push(Span::styled(display, style));
+                }
+                if let Some(at) = &mut offset {
+                    *at += grapheme.len();
+                }
+                cells = end;
+                if cells >= buffer.left + (inner.width - gutter) as usize {
+                    break;
+                }
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(base),
+            Rect::new(
+                inner.x + gutter,
+                inner.y + row as u16,
+                inner.width - gutter,
+                1,
+            ),
+        );
+    }
+    if inner.height > 0 {
+        let status=buffer.command.as_ref().map(|(search,text)|format!("{}{}",if *search{"/"}else{":"},safe_text(text))).unwrap_or_else(||"i 编辑 · v/Shift方向 选区 · Ctrl+g/:ask 讨论 · Ctrl+s 发布 · Ctrl+d 对比 · Ctrl+] 工作台".into());
+        frame.render_widget(
+            Paragraph::new(status).style(Style::default().fg(theme.accent)),
+            Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+        );
+    }
+    if focused {
+        let row = buffer.cursor_row().saturating_sub(buffer.top);
+        let start = starts.get(buffer.line()).copied().unwrap_or(0);
+        let col = buffer.text[start..buffer.cursor]
+            .replace('\t', "    ")
+            .width()
+            .saturating_sub(buffer.left);
+        if row < height as usize && col < (inner.width - gutter) as usize {
+            frame.set_cursor_position((inner.x + gutter + col as u16, inner.y + row as u16));
+        }
+    }
+}
+fn review_chat_panel(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
+    let block = theme.block(
+        if app.review_chat_busy {
+            " 代码讨论 · AI 回复中 "
+        } else {
+            " 代码讨论 · i 追问 · Esc 回代码 · Home/End "
+        },
+        app.panel == Panel::Evidence,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let context = app.review_chat_context.as_ref();
+    let mut lines = Vec::new();
+    for message in app
+        .review_messages
+        .iter()
+        .filter(|m| context.is_some_and(|c| m.task_id == c.task_id && m.path == c.path))
+        .rev()
+        .take(24)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        lines.push(Line::from(Span::styled(
+            if message.role == "user" { "你" } else { "AI" },
+            Style::default()
+                .fg(if message.role == "user" {
+                    theme.accent
+                } else {
+                    theme.good
+                })
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(style_markdown(
+            &natural_block(
+                &message.content,
+                inner.width as usize,
+                if message.role == "user" {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+            )
+            .lines,
+            app.light,
+        ));
+    }
+    if !app.review_chat_text.is_empty() {
+        lines.extend(style_markdown(
+            &natural_block(&app.review_chat_text, inner.width as usize, Role::Assistant).lines,
+            app.light,
+        ));
+    }
+    if let Mode::ReviewChat { text } = &app.mode {
+        lines.push(Line::from(Span::styled(
+            format!("> {}▏", safe_text(text)),
+            Style::default().fg(theme.accent),
+        )));
+        lines.push(Line::from("Enter 直接发送当前引用 · Esc 返回代码"));
+    }
+    if app.review_proposal.is_some() {
+        lines.push(Line::from(Span::styled(
+            "有局部建议：代码区 Ctrl+p 查看/确认应用",
+            Style::default().fg(theme.warning),
+        )));
+    }
+    let skip = app
+        .review_chat_scroll
+        .unwrap_or_else(|| lines.len().saturating_sub(inner.height as usize))
+        .min(lines.len().saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
+}
+
 fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut ReaderCache) {
     if let Some(screen) = &app.editor_screen {
         render_editor(frame, screen, area, app.editor_focused, theme);
+        return;
+    }
+    if app.view == View::Review
+        && let Some(buffer) = app.current_buffer()
+    {
+        if app.review_chat_open && (app.fullscreen || frame.area().width < 116) {
+            let areas = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(area);
+            native_review(frame, app, buffer, areas[0], theme);
+            review_chat_panel(frame, app, areas[1], theme);
+        } else {
+            native_review(frame, app, buffer, area, theme);
+        }
         return;
     }
     cache.prepare(app, area.width.saturating_sub(2));
@@ -1814,6 +2065,10 @@ struct EvidenceCache {
 }
 
 fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut EvidenceCache) {
+    if app.view == View::Review && app.review_chat_open {
+        review_chat_panel(frame, app, area, theme);
+        return;
+    }
     let mut blocks = app.node_evidence_blocks().unwrap_or_else(|| {
         let mut blocks = Vec::new();
         if app.view == View::Tasks {

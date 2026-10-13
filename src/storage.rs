@@ -18,6 +18,7 @@ pub struct WorkspaceStore {
     directory: PathBuf,
     _lock: fs::File,
     last_ui: Option<String>,
+    last_review_revision: Option<u64>,
     last_tasks: HashMap<String, String>,
     saved_tasks_revision: Option<(usize, u64)>,
     last_progress: HashMap<(String, String), (bool, u16, u16)>,
@@ -192,6 +193,7 @@ impl WorkspaceStore {
             directory,
             _lock: lock,
             last_ui: None,
+            last_review_revision: None,
             last_tasks: HashMap::new(),
             saved_tasks_revision: None,
             last_progress: HashMap::new(),
@@ -585,6 +587,31 @@ impl WorkspaceStore {
     }
 
     pub fn restore(&self, app: &mut App) -> Result<()> {
+        if let Some(record) = self
+            .connection
+            .query_row(
+                "SELECT value FROM ui_state WHERE key='review_workspace'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            ensure!(record.len() <= 64 * 1024 * 1024, "审核草稿记录过大");
+            let (mut buffers, messages): (
+                Vec<crate::review_editor::Buffer>,
+                Vec<crate::review_editor::ChatMessage>,
+            ) = serde_json::from_str(&record)?;
+            ensure!(
+                buffers.len() <= 64 && messages.len() <= 64,
+                "审核草稿记录超出限制"
+            );
+            for buffer in &mut buffers {
+                buffer.validate()?;
+            }
+            app.review_buffers = buffers;
+            app.review_messages = messages;
+            app.review_revision = app.review_revision.wrapping_add(1);
+        }
         app.tasks = self.tasks()?;
         let saved: Option<String> = self
             .connection
@@ -762,6 +789,15 @@ impl WorkspaceStore {
     }
 
     pub fn save(&mut self, app: &App) -> Result<()> {
+        if self.last_review_revision != Some(app.review_revision) {
+            let record = serde_json::to_string(&(&app.review_buffers, &app.review_messages))?;
+            ensure!(
+                record.len() <= 64 * 1024 * 1024,
+                "审核草稿超过持久化限制；未覆盖旧记录"
+            );
+            self.connection.execute("INSERT INTO ui_state(key,value) VALUES('review_workspace',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[record])?;
+            self.last_review_revision = Some(app.review_revision);
+        }
         let revision = (app.tasks.len(), app.tasks_revision);
         if self.saved_tasks_revision != Some(revision) {
             for task in &app.tasks {

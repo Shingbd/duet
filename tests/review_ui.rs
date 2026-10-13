@@ -284,7 +284,7 @@ fn review_lists_only_changed_paths_once_and_shows_file_scoped_colored_diff() {
     app.act(Action::Tasks);
     app.act(Action::Review);
     assert_eq!(app.view, View::Review);
-    assert_eq!(app.panel, Panel::Reader);
+    assert_eq!(app.panel, Panel::Queue); // Workbench shortcuts remain safe; Tab focuses editable review.
     assert_eq!(app.current().unwrap().title, "a.rs");
     assert_eq!(app.current().unwrap().version, snapshot.commit);
     assert_eq!(app.current().unwrap().change, Some(ChangeKind::Modified));

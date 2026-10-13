@@ -61,7 +61,17 @@ Defaults are shipped in [`duet.default.json`](duet.default.json). This repositor
 
 Preferences include language (`zh-CN` / partial `en`), theme, initial view, keymap, editor, Pi executable/model, execution budget, and UI polling/save delays. Precedence: built-in → user-global → project's `duet.json` → `--config` → CLI overrides. Preferences never grant model/write/merge permission. See the [configuration guide](docs/configuration.md) for paths, validation, and language coverage.
 
-## Embedded Helix
+## Editable review + contextual AI
+
+Review now automatically shows full code, line numbers, lexical highlighting and colored additions/deletions—no `h` or editor subprocess needed. **Tab** focuses the native editor; **i** edits; **Ctrl+]** returns to workbench shortcuts.
+
+**Ctrl+G** or **:ask** opens a code question. Enter sends the cursor word/line or selection directly, including unsaved edits, **without a range-confirmation dialog**. Replies appear next to the code. Discussion disables all Pi tools; suggested patches require **Ctrl+P → Enter** and reject changed buffers.
+
+**Ctrl+S** saves the draft and attempts a new immutable revision, resetting approval/verification without touching main or the original candidate. First-version publication supports the final-delivery node of a fully implemented, unmerged task, within its original scope; earlier/live/historical-node drafts can be edited/discussed, but their publication/downstream rebuild is not implemented.
+
+See [editable review and contextual discussion](docs/review-editor.md) for controls, persistence and limitations. The default view is host-owned, not Helix; syntax coloring is lexical rather than full language-server semantics.
+
+## Optional embedded Helix
 
 Helix can run **inside the code/diff panel** using a real Unix PTY, without leaving Duet. Install `hx` with its runtime, or set `helix_path` / use `--helix /path/to/hx`.
 
@@ -83,7 +93,7 @@ Discuss → Confirm the plan → Implement nodes → Review checkpoints
 | --- | --- | --- |
 | Discuss | `1` → `i`, enter your request | Read-only AI discussion; no automatic implementation |
 | Start or continue | `s` → `Enter` | Write access in the task worktree for the confirmed plan |
-| Review | `2`; `{` / `}` switch nodes | Inspect the selected node's fixed diff |
+| Review/edit draft | `2`, Tab; `{` / `}` in workbench focus switch nodes | Full-code view and independent local edits; no automatic approval |
 | Approve a node | `a` → `Enter` in review | Approve that exact checkpoint; no testing or merging |
 | Continue after a review pause | `p` | Explicitly resume; approval alone does not resume execution |
 | Integrate | `g` | Open the whole-task integration diff or conflict draft |
@@ -166,6 +176,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 
 ## Documentation
 
+- [Editable review and contextual AI — bilingual](docs/review-editor.md)
 - [Embedded Helix — bilingual](docs/helix.md)
 - [Configuration reference — bilingual](docs/configuration.md)
 - [Detailed operating guide — Chinese](docs/user-guide.zh-CN.md)

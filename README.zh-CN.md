@@ -61,7 +61,17 @@ cargo build --release
 
 可配置语言（`zh-CN` / 部分英文 `en`）、主题、初始视图、快捷键、编辑器、Pi 路径/模型、执行预算和界面轮询/保存延迟。优先级：内置默认 → 用户全局 → 项目 `duet.json` → `--config` → 命令行参数。配置不代替模型、写入或合入授权。路径、校验和语言覆盖范围见[配置说明](docs/configuration.md)。
 
-## 框内 Helix 编辑
+## 默认可编辑审核与就地 AI 讨论
+
+审核直接显示完整代码、行号、基础词法高亮及增删差异，无需 `h` 或启动编辑器。**Tab** 进入原生代码区，**i** 编辑，**Ctrl+]** 回工作台快捷键。
+
+**Ctrl+G** 或 **:ask** 提问，Enter 直接发送光标词／行或选区，包括未保存修改，**没有发送范围确认弹窗**。AI 在代码旁回复，讨论禁用全部 Pi 工具；建议须 **Ctrl+P → Enter** 明确应用，缓冲区变化则拒绝覆盖。
+
+**Ctrl+S** 保存草稿并尝试发布新不可变修订，批准/验证重置，主项目和原候选不变。首版发布限全部实现结束、尚未合入任务的最终交付节点，且遵守该节点范围；前序／运行中／历史节点可编辑本地草稿并讨论，但其发布与下游重建尚未实现。
+
+操作、持久化和边界见[可编辑审核与上下文 AI](docs/review-editor.md)。默认视图由 Duet 持有缓冲区，不是 Helix；高亮为基础词法着色，不是完整语言服务器语义。
+
+## 可选框内 Helix 编辑
 
 Helix 通过真实 Unix PTY **运行在代码/diff 框内**，无需离开工作台。安装包含 runtime 的 `hx`，或配置 `helix_path` / 使用 `--helix /path/to/hx`。
 
@@ -166,6 +176,7 @@ python3 scripts/merge-smoke.py target/release/duet-workbench
 
 ## 更多文档
 
+- [可编辑审核与上下文 AI（中英）](docs/review-editor.md)
 - [内嵌 Helix（中英）](docs/helix.md)
 - [配置说明（中英）](docs/configuration.md)
 - [详细操作指南](docs/user-guide.zh-CN.md)

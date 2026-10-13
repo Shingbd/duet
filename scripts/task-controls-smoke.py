@@ -78,7 +78,7 @@ for line in sys.stdin:
         send(b'2')
         wait(lambda:len(records()[1][0]['attempts'][0].get('previews',[]))>=1)
         drain(.15)
-        assert b'+n1 first' in output,'live reader must show first immutable diff'
+        assert b'n1 first' in output and b'NORMAL' in output,'live editor must show first immutable code revision'
         first=records()[1][0]['attempts'][0]['previews'][0]
         wait(lambda:len(records()[1][0]['attempts'][0].get('previews',[]))>=2)
         drain(.4)
@@ -87,7 +87,7 @@ for line in sys.stdin:
         drain(.4)
         assert b'second' in output
         assert records()[2]['selected'][0]==records()[1][0]['attempts'][-1]['checkpoint']
-        send(b'1\t\tj')
+        send(b'1j')
         wait(lambda:records()[2]['task_selection']['node_id']=='n2')
         send(b'd');assert len(records()[1])==2,'deletion requires confirmation'
         send(b'\x1b');send(b'd\r')

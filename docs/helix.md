@@ -2,6 +2,10 @@
 
 [English README](../README.md) · [中文首页](../README.zh-CN.md)
 
+The default review panel is now [a native editable review buffer with contextual AI](review-editor.md), not a Helix process. This page documents the optional Helix entry. Its PTY cannot supply exact cursor/selection/unsaved-buffer context to Duet.
+
+默认审核现在使用[原生可编辑缓冲区与上下文 AI](review-editor.md)，不是 Helix 进程。本页说明可选 Helix 入口，其 PTY 不向 Duet 提供精确光标、选区或未保存缓冲区。
+
 Helix runs in a real Unix PTY. Duet parses the child terminal output into styled cells and renders them inside the code/diff panel, with its own navigation and evidence panels still visible. This is not a suspend-and-launch external editor.
 
 Helix 在真实 Unix PTY 中运行，Duet 将输出解析为带样式的单元格，绘制在代码/diff 框内，保留工作台侧栏与证据区，不是暂停工作台后另开编辑器。

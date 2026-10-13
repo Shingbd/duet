@@ -23,6 +23,8 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
   # Helix insert mode. Duet must forward q/i/: rather than treating them as its shortcuts.
   send(b'iedited in embedded helix ');send(b'\x1b')
   send(b'\x1d');assert process.poll() is None
+  send(b'q');assert process.poll() is None # Host termination confirmation, not an editor q.
+  send(b'\x1b')
   send(b'h');drain(.2)
   fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',28,96,0,0));drain(.5)
   send(b':wq\r');drain(1)

@@ -75,7 +75,7 @@ for line in sys.stdin:
         wait(lambda:records()[1]['execution']=='Running');send(b'2')
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=1)
         first=records()[1]['attempts'][0]['previews'][0]
-        assert b'-old baseline' in output and b'+first change' in output
+        assert b'old baseline' in output and b'first change' in output and b'NORMAL' in output
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=2)
         drain(.4)
         assert records()[2]['review_version']!=first,'no v needed'

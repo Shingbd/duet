@@ -65,7 +65,7 @@ for line in sys.stdin:
         wait(lambda:records()[1]['execution']=='Running');send(b'2')
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=1)
         first=records()[1]['attempts'][0]['previews'][0]
-        assert b'-old baseline' in output and b'+first change' in output
+        assert b'old baseline' in output and b'first change' in output and b'NORMAL' in output
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=2)
         drain(.4)
         assert records()[2]['review_version']!=first,'no v needed'
@@ -90,7 +90,7 @@ for line in sys.stdin:
         send(b'\r');assert head()==original
         send(b'\r');wait(lambda:records()[0]['state']=='Merged')
         assert (project/'main.txt').read_text()=='human Helix repair\n'
-        send(b'q');assert process.wait(timeout=3)==0;assert termios.tcgetattr(slave)==before
+        send(b'\x1d');send(b'q');assert process.wait(timeout=3)==0;assert termios.tcgetattr(slave)==before
         print('REAL HELIX review passed: approved delivery unchanged, independent draft, immutable manual revision, explicit final merge')
     finally:
         if process and process.poll() is None:process.kill();process.wait()
