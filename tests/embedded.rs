@@ -27,6 +27,22 @@ fn wait(editor: &mut PtyEditor, predicate: impl Fn(&PtyEditor) -> bool) {
     }
 }
 #[test]
+fn child_output_wakes_host_before_the_idle_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let exe = temp.path().join("fake-hx");
+    let file = temp.path().join("file.txt");
+    fs::write(&file, "file").unwrap();
+    fs::write(&exe,"#!/usr/bin/env python3\nimport os,time,tty\ntty.setraw(0)\ntime.sleep(.05)\nos.write(1,b'WAKE')\ntime.sleep(1)\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut editor = PtyEditor::spawn(&exe, temp.path(), &file, 10, 40).unwrap();
+    let start = Instant::now();
+    editor.wait_io(Duration::from_secs(3)).unwrap();
+    editor.poll().unwrap();
+    assert!(editor.screen().contents().contains("WAKE"));
+    assert!(start.elapsed() < Duration::from_secs(2));
+    editor.stop().unwrap();
+}
+#[test]
 fn pty_has_tty_unicode_styles_resize_input_and_clean_exit() {
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-hx");

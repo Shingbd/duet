@@ -624,14 +624,29 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         } else {
             Duration::from_millis(config.performance.idle_poll_ms)
         };
-        if event::poll(wait)? {
+        let input_ready = if let Some(s) = &editor {
+            if event::poll(Duration::ZERO)? {
+                true
+            } else {
+                s.terminal.wait_io(wait)?;
+                event::poll(Duration::ZERO)?
+            }
+        } else {
+            event::poll(wait)?
+        };
+        if input_ready {
+            let mut host_changed = false;
             // Drain queued input before drawing so key repeats/pastes don't queue frames.
             for _ in 0..64 {
+                let mut changed = true;
                 match event::read()? {
                     Event::Key(_)
                         if editor
                             .as_ref()
-                            .is_some_and(|s| s.workspace.pending.is_some()) => {}
+                            .is_some_and(|s| s.workspace.pending.is_some()) =>
+                    {
+                        changed = false;
+                    }
                     Event::Key(key)
                         if matches!(app.mode, Mode::ConfirmReviewPatch { .. })
                             && editor.is_some()
@@ -645,6 +660,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         }
                     }
                     Event::Key(key) if app.editor_focused && editor.is_some() => {
+                        changed = false;
                         editor
                             .as_mut()
                             .unwrap()
@@ -664,6 +680,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             ) {
                                 s.workspace.begin(&mut s.terminal, 0x11)?;
                             }
+                            changed = true;
                             app.editor_focused = false;
                             app.fullscreen = false;
                             app.panel = duet_workbench::app::Panel::Queue;
@@ -679,6 +696,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                                 crossterm::event::KeyCode::Char('g' | 's' | 'p' | 'd')
                             )
                         {
+                            changed = true;
                             let n = match key.code {
                                 crossterm::event::KeyCode::Char('g') => 7,
                                 crossterm::event::KeyCode::Char('s') => 19,
@@ -688,14 +706,19 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             let s = editor.as_mut().unwrap();
                             s.workspace.begin(&mut s.terminal, n)?;
                         } else if let Err(error) = editor.as_mut().unwrap().terminal.key(key) {
+                            changed = true;
                             app.status = error.to_string();
                         }
                     }
                     Event::Paste(_)
                         if editor
                             .as_ref()
-                            .is_some_and(|s| s.workspace.pending.is_some()) => {}
+                            .is_some_and(|s| s.workspace.pending.is_some()) =>
+                    {
+                        changed = false;
+                    }
                     Event::Paste(text) if app.editor_focused && editor.is_some() => {
+                        changed = false;
                         editor
                             .as_mut()
                             .unwrap()
@@ -704,6 +727,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         app.helix_unknown =
                             !editor.as_ref().unwrap().workspace.unobserved.is_empty();
                         if let Err(error) = editor.as_mut().unwrap().terminal.paste(&text) {
+                            changed = true;
                             app.status = error.to_string();
                         }
                     }
@@ -728,13 +752,16 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     }
                     _ => {}
                 }
+                host_changed |= changed;
                 if app.quit || !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
             last_input = Instant::now();
-            redraw = true;
-            save_since.get_or_insert(last_input);
+            redraw |= host_changed;
+            if host_changed {
+                save_since.get_or_insert(last_input);
+            }
             if std::mem::take(&mut app.requested_helix_context)
                 && let Some(s) = &mut editor
                 && let Err(e) = s.workspace.begin(&mut s.terminal, 7)

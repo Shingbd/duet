@@ -1,4 +1,32 @@
 # 交互性能排查
+
+## 嵌入式 Helix 按键延迟（最新）
+
+`scripts/helix-latency-probe.py` 对比独立真实 Helix 25.07.1、Duet release/debug：临时 Git 仓库、6000 行文件、相同外部 120×32 PTY、50 次插入按键至新字形输出，无模型／网络调用。嵌入代码区尺寸小于独立 Helix 全屏；测的是本机 stdout 字形反馈，不是 SSH 客户端端到端或首个文件／Git 工作区加载时间。
+
+| 构建 | 修复前 p50 / p95 | 修复后 p50 / p95 |
+| --- | --- | --- |
+| 独立 Helix 对照 | 6.34 / 6.54 ms | 6.27 / 6.43 ms |
+| 嵌入 release | 17.88 / 18.33 ms | 7.28 / 7.55 ms |
+| 嵌入 debug | 37.93 / 40.70 ms | 17.13 / 19.82 ms |
+
+修复后 release 的本轮最大值 8.94 ms；约减少 59% 中位延迟，宿主额外延迟约 1 ms；不是零延迟保证。1 秒空闲样本在时钟 tick 精度下 CPU 0%，多次样本偶见 1%，不代表忙轮询或严格零占用。
+
+根因及热路径修复：
+- 旧循环只通过 crossterm 等宿主键盘，Helix PTY 输出必须等待完整 active_poll_ms（默认 16 ms）。现在 Unix poll 同时等 stdin 与 PTY；输出立即唤醒，仍保留活动超时处理桥接、模型进度及保存期限。已缓存的 crossterm 事件优先取，非编辑器路径保留原事件等待；不降低间隔做忙轮询。
+- 旧循环每个转发按键先重画旧 Helix 画面，再画真实新帧，debug 尤其昂贵。普通编辑器按键／粘贴只转发，PTY 实际改变才绘制；焦点、上下文、错误、宿主输入仍正常触发绘制。
+- 普通 Helix 键不再标记 SQLite 状态待保存；实际捕获到的审核草稿、聊天／发布及宿主导航继续按原规则持久化。不是丢弃权威草稿保存，也不是缓存终端单元冒充选区。
+- 宿主已排队保存仍遵守最长延迟；对话、授权、固定版本、桥接 stale 检查和合入互斥不改。
+
+增加 child_output_wakes_host_before_the_idle_timeout 单元测试；181 项测试、十五组 PTY、严格 fmt/clippy、debug/release 构建通过。日常使用 `./target/release/duet-workbench open .`，旧进程需要退出重开；源码调试版本仍有明显额外绘制开销。下方为早期非 Helix 阅读器基准，勿混用两种测量。
+
+复现：
+```bash
+python3 scripts/helix-latency-probe.py \
+  target/tools/helix-25.07.1-x86_64-linux/hx \
+  target/release/duet-workbench target/debug/duet-workbench
+```
+
 ## 问题与证据
 用户报告远程终端操作卡顿。发现旧进程使用 debug 构建，进程累计 CPU 占用约 16%。
 源代码问题：

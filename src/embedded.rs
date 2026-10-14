@@ -170,6 +170,42 @@ impl PtyEditor {
     ) -> Result<Self> {
         Self::spawn(executable, cwd, path, rows, cols)
     }
+    /// Wake immediately for either host stdin or child output; do not sleep a full UI polling tick.
+    pub fn wait_io(&self, timeout: std::time::Duration) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let mut fds = [
+                libc::pollfd {
+                    fd: if unsafe { libc::isatty(0) } == 1 {
+                        0
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.master.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+            let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
+            if rc < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e.into());
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            std::thread::sleep(timeout);
+        }
+        Ok(())
+    }
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
