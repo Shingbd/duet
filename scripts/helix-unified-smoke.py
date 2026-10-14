@@ -80,7 +80,7 @@ for line in sys.stdin:
         editor_pid=children();assert b'HELIX' in output
         send(b'2f');drain(.5) # queued view+fullscreen keys must resolve the target before editing
         wait(lambda:records()[2]['panel']=='Reader')
-        send(b'j');send(b'k');send(b'f');send(b'\x1b') # native find/cancel, not host fullscreen toggle
+        send(b'j');send(b'k');send(b'fc') # complete native find; not host fullscreen toggle
         send(b'\x1d');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
         send(b'f');drain(.5);wait(lambda:records()[2]['panel']=='Reader')
         assert children()==editor_pid,'fullscreen restarted editor'
