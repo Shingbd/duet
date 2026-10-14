@@ -334,7 +334,7 @@ fn draw_cached(
             Line::from(status_spans),
             Line::from(Span::styled(
                 if app.editor_focused {
-                    if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
+                    if app.fullscreen {app.tr(" Helix 全屏 · Ctrl+] 退出全屏/回侧栏 · f 为原生查找 · :w 保存"," Helix fullscreen · Ctrl+] exit to sidebar · f native find · :w save").into()}else if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
                 }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · Shift+Tab 查看验收/日志 · j/k 滚动"," Tests running · Ctrl+X / :verify-stop cancel · Shift+Tab evidence · j/k scroll").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
                     if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · Ctrl+] 回工作台；编辑按键不触发外部动作".into()}
                 }else if app.config.language==crate::config::Language::English {

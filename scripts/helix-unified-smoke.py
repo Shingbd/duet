@@ -76,9 +76,15 @@ for line in sys.stdin:
         process=launch();drain(.4);send(b'1iDiscuss the source change\r')
         wait(lambda:records()[0]['state']=='Ready');send(b's\r')
         wait(lambda:records()[1]['execution']=='Implemented');drain(.5)
-        send(b'2');drain(1);assert children(),'real Helix not started'
+        send(b'3');drain(1);assert children(),'real Helix not started'
         editor_pid=children();assert b'HELIX' in output
-        send(b'\t');send(b'imanual_design ');send(b'\x1b')
+        send(b'2f');drain(.5) # queued view+fullscreen keys must resolve the target before editing
+        wait(lambda:records()[2]['panel']=='Reader')
+        send(b'j');send(b'k');send(b'f');send(b'\x1b') # native find/cancel, not host fullscreen toggle
+        send(b'\x1d');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
+        send(b'f');drain(.5);wait(lambda:records()[2]['panel']=='Reader')
+        assert children()==editor_pid,'fullscreen restarted editor'
+        send(b'imanual_design ');send(b'\x1b')
         send(b'ggv');send(b'l'*12);send(b'\x07');drain(.6)
         send(b'Discuss this design\r')
         wait(lambda:b'Discussed unsaved selection' in output)
@@ -103,6 +109,10 @@ for line in sys.stdin:
         assert candidate.read_text()=='second change\nnew growth'
         # Project/review share the same real process; j/k selects without Enter.
         send(b'3');drain(.5);assert children()==editor_pid
+        project_selection=records()[2]['project_tree_selected'];send(b'f');drain(.5)
+        wait(lambda:records()[2]['panel']=='Reader');send(b'j');send(b'k');drain(.5)
+        assert records()[2]['project_tree_selected']==project_selection,'fullscreen j/k navigated hidden file tree'
+        send(b'\x1d');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
         send(b'j');drain(.3);send(b'k');drain(.3);assert children()==editor_pid
         send(b'2');drain(.5);assert children()==editor_pid
         # Close all saved buffers, then independently approve and merge fixed revision.

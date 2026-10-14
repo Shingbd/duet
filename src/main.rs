@@ -593,7 +593,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 && app.requested_review_helix
                 && app.view == duet_workbench::app::View::Review
                 && matches!(app.mode, Mode::Browse)
-                && !app.editor_focused
+                && (!app.editor_focused || app.requested_fullscreen_focus)
                 && app.current_buffer().is_some()
             {
                 let result = (|| -> Result<()> {
@@ -605,6 +605,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     if let Some(s) = &mut editor {
                         if s.workspace.pending.is_none() {
                             duet_workbench::editing::switch_review(s, &mut app, repo)?;
+                            app.requested_fullscreen_focus = false;
                         }
                     } else {
                         let focus = app.panel == duet_workbench::app::Panel::Reader;
@@ -623,6 +624,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                         app.editor_screen = Some(s.terminal.screen().clone());
                         app.editor_project = false;
                         app.editor_focused = focus;
+                        app.requested_fullscreen_focus = false;
                         if !focus {
                             app.panel = duet_workbench::app::Panel::Queue;
                         }
@@ -632,6 +634,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 })();
                 if let Err(error) = result {
                     app.status = format!("Helix 审核不可用：{error}");
+                    app.requested_fullscreen_focus = false;
                     app.requested_review_helix = false;
                     app.editor_focused = false;
                 }
@@ -699,6 +702,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             // Drain queued input before drawing so key repeats/pastes don't queue frames.
             for _ in 0..64 {
                 let mut changed = true;
+                let fullscreen_before = app.fullscreen;
                 match event::read()? {
                     Event::Key(key)
                         if verification.is_some()
@@ -824,7 +828,13 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     _ => {}
                 }
                 host_changed |= changed;
-                if app.quit || !event::poll(Duration::ZERO)? {
+                // Resolve a fullscreen target/focus change before the next queued key.
+                if app.quit
+                    || (!fullscreen_before
+                        && app.fullscreen
+                        && (app.requested_fullscreen_focus || app.requested_project_open.is_some()))
+                    || !event::poll(Duration::ZERO)?
+                {
                     break;
                 }
             }

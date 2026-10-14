@@ -376,20 +376,21 @@ pub fn switch_review(session: &mut Session, app: &mut App, repo: &Repository) ->
     );
     let b = app.current_buffer().context("没有审核缓冲区")?;
     let file = session.workspace.review(b, repo)?;
-    if session.workspace.active.as_ref() == Some(&file) {
-        return Ok(false);
+    let changed = session.workspace.active.as_ref() != Some(&file);
+    if changed {
+        session
+            .workspace
+            .request_open(&mut session.terminal, &file)?;
+        session.workspace.active = Some(file);
+        session.target = Target::Workspace {
+            directory: session.workspace.directory.clone(),
+        };
     }
-    session
-        .workspace
-        .request_open(&mut session.terminal, &file)?;
-    session.workspace.active = Some(file);
-    session.target = Target::Workspace {
-        directory: session.workspace.directory.clone(),
-    };
+    // Preserve the host's requested focus, including f/Tab entry and evidence focus.
+    // Even an already-active buffer must reconcile project/review identity flags.
     app.editor_project = false;
-    app.editor_focused = false;
-    app.panel = crate::app::Panel::Queue;
-    Ok(true)
+    app.editor_focused = app.panel == crate::app::Panel::Reader && !app.review_compare;
+    Ok(changed)
 }
 pub fn poll_bridge(session: &mut Session, app: &mut App) -> Result<bool> {
     if session.workspace.light != app.light {

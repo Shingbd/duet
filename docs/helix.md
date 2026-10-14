@@ -24,14 +24,14 @@ Duet creates private per-session configuration under `.duet/helix-workspaces/<no
 
 ## Focus / 焦点
 
-- Tab from sidebar → real Helix; Ctrl+] → workbench, without saving/closing.
+- Tab from sidebar → real Helix; workbench f → fullscreen **and Helix focus in one step**. j/k then move inside the editor, not the hidden tree. Ctrl+] → exit fullscreen and return to sidebar without saving/closing. Editor-focused f stays native find-character, not a fullscreen toggle.
 - Normal keys, selections, undo, searching, space menus and paste belong to Helix with editor focus. The footer shows editor controls, not approval/start shortcuts.
 - Review: Ctrl+G asks using real unsaved context; Ctrl+P previews then Enter applies, Esc cancels; Ctrl+S saves the private file and attempts fixed publication; Ctrl+D opens/closes read-only full diff.
 - `:w`, `:wa`, `:wqa` follow Helix rules. No automatic commit/approval/merge.
 - Quitting Duet with Helix running requires termination confirmation; stopping can lose uncaptured unsaved editor text. Saved private drafts and project files remain.
 - Context capture briefly pauses key dispatch. Errors/timeouts reject the operation instead of using guessed/stale text.
 
-- 侧栏 Tab → 真正 Helix；Ctrl+] → 工作台，不保存、不关闭。
+- 侧栏 Tab → 真正 Helix；工作台 f → 全屏并一次聚焦 Helix，j/k 只移动编辑光标，不操作隐藏文件树；Ctrl+] → 退出全屏回侧栏，不保存、不关闭。编辑焦点 f 保留原生查找字符，不是全屏切换。
 - 编辑焦点下移动、选区、撤销、搜索、space 菜单、粘贴由 Helix 处理；底栏显示编辑器操作，不显示批准／启动键。
 - 审核 Ctrl+G 提问，Ctrl+P 预览再 Enter 应用／Esc 取消，Ctrl+S 保存私有文件并尝试固定发布，Ctrl+D 打开／返回只读完整 diff。
 - :w / :wa / :wqa 遵循 Helix；不自动提交／批准／合入。

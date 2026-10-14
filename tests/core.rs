@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duet_workbench::{
-    app::{App, Mode, Page, Panel, ReadingItem, TaskSelection},
+    app::{App, Mode, Page, Panel, ReadingItem, TaskSelection, View},
     keymap::{Action, Keymap},
     nodes::{TaskRecord, TaskState},
     rpc::{MAX_RECORD_BYTES, RunState, RunStatus, read_record},
@@ -271,6 +271,26 @@ fn lowercase_jk_navigate_and_uppercase_keys_remain_unbound() {
     assert_eq!(app.current().unwrap().scroll, 0);
 }
 
+#[test]
+fn fullscreen_review_requests_real_target_and_preserves_compare() {
+    let mut app = fixture_app();
+    app.view = View::Review;
+    app.helix_review = true;
+    app.panel = Panel::Queue;
+    app.editor_screen = Some(vt100::Parser::new(24, 80, 0).screen().clone());
+    app.editor_project = false;
+    app.act(Action::Fullscreen);
+    assert!(app.fullscreen);
+    assert_eq!(app.panel, Panel::Reader);
+    assert!(app.editor_focused);
+    assert!(app.requested_review_helix);
+    app.act(Action::Fullscreen);
+    app.requested_review_helix = false;
+    app.review_compare = true;
+    app.act(Action::Fullscreen);
+    assert!(!app.editor_focused);
+    assert!(!app.requested_review_helix);
+}
 #[test]
 fn fullscreen_navigation_cannot_target_a_hidden_panel() {
     let mut app = fixture_app();

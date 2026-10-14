@@ -159,6 +159,7 @@ pub struct TaskSelection {
 pub struct App {
     pub helix_review: bool,
     pub requested_review_helix: bool,
+    pub requested_fullscreen_focus: bool,
     pub requested_helix_context: bool,
     pub helix_unknown: bool,
     pub review_compare: bool,
@@ -344,6 +345,7 @@ impl App {
         Self {
             helix_review: false,
             requested_review_helix: false,
+            requested_fullscreen_focus: false,
             requested_helix_context: false,
             helix_unknown: false,
             review_compare: false,
@@ -1785,10 +1787,14 @@ impl App {
             Action::Explain => self.explain = !self.explain,
             Action::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
+                self.requested_fullscreen_focus = false;
                 if self.fullscreen {
                     self.panel = Panel::Reader;
-                    if self.helix_review && self.view == View::Review {
+                    if self.helix_review && self.view == View::Review && !self.review_compare {
                         self.requested_review_helix = true;
+                        self.requested_fullscreen_focus = true;
+                    } else if self.view == View::Project && !self.project_tree.entries.is_empty() {
+                        self.requested_project_open = Some(self.project_tree.selected.clone());
                     }
                     self.editor_focused = self.editor_screen.is_some()
                         && !self.review_compare
