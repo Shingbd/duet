@@ -234,6 +234,31 @@ fn task_state_label(s: TaskState) -> &'static str {
         TaskState::Interrupted => "已中断",
     }
 }
+fn task_state_symbol(s: TaskState) -> &'static str {
+    match s {
+        TaskState::Merged => "⇄",
+        TaskState::Planning => "…",
+        TaskState::Ready => "○",
+        TaskState::Running => "◐",
+        TaskState::Paused => "‖",
+        TaskState::Implemented => "◇",
+        TaskState::Failed => "×",
+        TaskState::Cancelled => "⊘",
+        TaskState::Interrupted => "!",
+    }
+}
+fn execution_symbol(s: Execution) -> &'static str {
+    match s {
+        Execution::Planned => "○",
+        Execution::Running => "◐",
+        Execution::Paused => "‖",
+        Execution::Implemented => "◇",
+        Execution::NoChanges => "∅",
+        Execution::Failed => "×",
+        Execution::Cancelled => "⊘",
+        Execution::Interrupted => "!",
+    }
+}
 fn execution_label(s: Execution) -> &'static str {
     match s {
         Execution::Planned => "未开始",
@@ -646,22 +671,22 @@ impl App {
                     "{} · {}",
                     task.prompt.lines().next().unwrap_or("任务"),
                     if task.discussion_pending {
-                        "讨论待补充"
+                        "?"
                     } else {
-                        task_state_label(task.state)
+                        task_state_symbol(task.state)
                     }
                 ),
             ));
             for node in nodes {
-                let marker = if node.review == Review::Approved {
-                    "✓"
-                } else {
-                    match node.execution {
-                        Execution::Running => "◐",
-                        Execution::Implemented => "◇",
-                        Execution::Failed => "×",
-                        _ => "○",
-                    }
+                let review = match node.review {
+                    Review::Pending => "·",
+                    Review::Approved => "✓",
+                    Review::ChangesRequested => "↺",
+                };
+                let verification = match node.verification {
+                    Verification::Unverified => "○",
+                    Verification::Passed => "✓",
+                    Verification::Failed => "×",
                 };
                 rows.push((
                     TaskSelection {
@@ -669,9 +694,9 @@ impl App {
                         node_id: Some(node.contract.id.clone()),
                     },
                     format!(
-                        "  {marker} {} · {}",
+                        "  {} · {}{review}{verification}",
                         node.contract.title,
-                        execution_label(node.execution)
+                        execution_symbol(node.execution)
                     ),
                 ));
             }

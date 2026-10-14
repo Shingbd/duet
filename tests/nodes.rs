@@ -23,6 +23,40 @@ fn plan() -> TaskPlan {
     }
 }
 #[test]
+fn sidebar_uses_compact_independent_status_symbols() {
+    let mut app = App::empty(Keymap::default());
+    let mut task = TaskRecord::legacy("task", "goal", "session");
+    task.install_plan(plan()).unwrap();
+    task.state = TaskState::Implemented;
+    app.tasks.push(task);
+    for (execution, symbol) in [
+        (Execution::Planned, "○"),
+        (Execution::Running, "◐"),
+        (Execution::Paused, "‖"),
+        (Execution::Implemented, "◇"),
+        (Execution::NoChanges, "∅"),
+        (Execution::Failed, "×"),
+        (Execution::Cancelled, "⊘"),
+        (Execution::Interrupted, "!"),
+    ] {
+        let node = &mut app.tasks[0].nodes[0];
+        node.execution = execution;
+        node.review = Review::Approved;
+        node.verification = Verification::Unverified;
+        let rows = app.task_rows(false);
+        assert_eq!(rows[0].1, "goal · ◇");
+        assert_eq!(rows[1].1, format!("  second · {symbol}✓○"));
+        assert!(
+            !rows
+                .iter()
+                .any(|(_, s)| s.contains("实现完成") || s.contains("实现结束"))
+        );
+    }
+    app.tasks[0].nodes[0].review = Review::ChangesRequested;
+    app.tasks[0].nodes[0].verification = Verification::Failed;
+    assert!(app.task_rows(false)[1].1.ends_with("!↺×"));
+}
+#[test]
 fn strict_plan_parser_validates_required_fields_and_dependency_order() {
     let p = plan();
     assert_eq!(p.order().unwrap(), vec![1, 0]);

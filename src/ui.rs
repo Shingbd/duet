@@ -436,16 +436,17 @@ format!(
             7,
         ),
         Mode::Help => {
-            let lines: Vec<Line> = app
-                .keymap
-                .help
+            let lines: Vec<Line> = [
+                Line::from(app.tr("列表符号：○ 未开始 · ◐ 执行 · ‖ 暂停 · ◇ 实现 · ∅ 无交付 · × 失败","Symbols: ○ planned · ◐ running · ‖ paused · ◇ implemented · ∅ no delivery · × failed")),
+                Line::from(app.tr("节点尾部依次为实现／审核／验证：◇✓○ = 已实现、已批准、未验证；↺ 返工","Node suffix: execution/review/verification; ◇✓○ = implemented/approved/unverified; ↺ rework")),
+            ].into_iter().chain(app.keymap.help
                 .iter()
                 .map(|(action, keys, label)| {
                     Line::from(format!(
                         "{keys:14} {}",
                         app.tr(label, action.english_label())
                     ))
-                })
+                }))
                 .collect();
             popup(
                 frame,
