@@ -57,6 +57,7 @@ Project configuration is ordinary source data and can be committed. If creating/
 | `keymap_file` | `null` | Optional keymap JSON; default bindings otherwise / 快捷键文件，空值使用默认 |
 | `editor` | `"vi"` | Single executable path, used only after confirmed editing; `DUET_EDITOR` overrides / 单个编辑器路径，确认后启动，环境变量优先 |
 | `helix_path` | `"hx"` | Embedded Helix executable; `--helix` overrides / 框内 Helix 可执行路径，--helix 覆盖 |
+| `helix_keepalive` | `true` | Reopen a successfully exited workspace editor; explicit stop and crashes do not restart / 普通成功退出后重建，明确停止／崩溃不重启 |
 | `review_editor` | `"helix"` | Real Helix default; explicit `"native"` legacy backend / 默认真实 Helix，native 明确选择旧原生后端 |
 | `agent.pi_path` | `"pi"` | Pi executable for planning, coding, retry, advisory, and probe / Pi 程序路径 |
 | `agent.model` | `null` | Explicit model identifier or Pi default; no automatic fallback / 模型标识或 Pi 默认，不自动切换 |

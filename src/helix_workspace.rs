@@ -131,6 +131,9 @@ impl Workspace {
     pub fn config_file(&self) -> PathBuf {
         self.config_home().join("helix/config.toml")
     }
+    pub fn refresh_config(&mut self) -> Result<()> {
+        self.write_config()
+    }
     fn write_config(&mut self) -> Result<()> {
         let dir = self.config_home().join("helix");
         conflict::private_dir(&dir.join("themes"))?;
@@ -162,6 +165,14 @@ impl Workspace {
                 "jump_backward",
             ];
             config.push_str(&format!("A-p = {}\n", serde_json::to_string(&apply)?));
+            config.push_str(&format!(
+                "F12 = {}\n",
+                serde_json::to_string(&vec!["normal_mode", ":open \"%sh{__duet_open}\""])?
+            ));
+            config.push_str(&format!(
+                "space.q = {}\n",
+                serde_json::to_string(&capture_commands("save-back", mode == "select"))?
+            ));
             for (key, action) in [
                 ("C-g", "ask"),
                 ("C-s", "publish"),
@@ -263,6 +274,18 @@ impl Workspace {
             .iter()
             .find(|b| b.file == file)
             .context("此 Helix 缓冲区不属于宿主管理的审核/项目文件；未发送代码")
+    }
+    pub fn request_open(
+        &mut self,
+        terminal: &mut crate::embedded::PtyEditor,
+        file: &Path,
+    ) -> Result<()> {
+        ensure!(
+            self.manifest.bindings.iter().any(|b| b.file == file),
+            "文件未绑定"
+        );
+        json(&self.directory.join("open.json"), &file.to_path_buf())?;
+        terminal.send(b"\x1b[24~")
     }
     pub fn begin(&mut self, terminal: &mut crate::embedded::PtyEditor, key: u8) -> Result<()> {
         ensure!(self.pending.is_none(), "正在读取编辑器，请稍候");
@@ -431,7 +454,7 @@ fn capture_commands(action: &str, select: bool) -> Vec<String> {
         ":pipe-to \"__duet_buffer|%{buffer_name}\"".into(),
         "jump_backward".into(),
     ];
-    if action == "publish" {
+    if matches!(action, "publish" | "save-back") {
         commands.insert(0, ":write".into());
     }
     commands
@@ -499,6 +522,16 @@ pub fn helper(directory: &Path, command: &str) -> Result<()> {
             .arg(command)
             .status()?;
         ensure!(status.success(), "Helix shell command failed");
+        return Ok(());
+    }
+    if command == "__duet_open" {
+        let file: PathBuf = read_json(&directory.join("open.json"))?;
+        let manifest: Manifest = read_json(&directory.join("manifest.json"))?;
+        ensure!(
+            manifest.bindings.iter().any(|b| b.file == file),
+            "Open target not bound"
+        );
+        std::io::stdout().write_all(file.to_str().context("非UTF-8路径")?.as_bytes())?;
         return Ok(());
     }
     let pending = directory.join("pending.json");

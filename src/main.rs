@@ -384,7 +384,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 .and_then(|changed| session.terminal.poll().map(|data| changed || data));
             match activity {
                 Ok(changed) => {
-                    if changed {
+                    if changed && session.terminal.exit_status().is_none() {
                         app.editor_screen = Some(session.terminal.screen().clone());
                         redraw = true;
                     }
@@ -395,19 +395,38 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
             }
             if let Some(status) = session.terminal.exit_status() {
-                let session = editor.take().unwrap();
-                app.requested_review_helix = false;
-                app.editor_screen = None;
-                app.editor_focused = false;
-                if let Err(error) = duet_workbench::editing::finish(
-                    session.target,
-                    status.success(),
-                    &mut app,
-                    &store,
-                ) {
-                    app.status = format!(
-                        "编辑器已退出，固定版本捕获未完成：{error}；草稿/备份保留，不会自动批准或合入"
+                let keep = app.config.helix_keepalive
+                    && status.success()
+                    && !matches!(
+                        session.target,
+                        duet_workbench::editing::Target::Integration { .. }
                     );
+                let resumed = if keep {
+                    match duet_workbench::editing::reopen(session, &mut app, rows, cols) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            app.status = format!("Helix 重建失败：{error}；不会重试");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                if !resumed {
+                    let session = editor.take().unwrap();
+                    app.requested_review_helix = false;
+                    app.editor_screen = None;
+                    app.editor_focused = false;
+                    if let Err(error) = duet_workbench::editing::finish(
+                        session.target,
+                        status.success(),
+                        &mut app,
+                        &store,
+                    ) {
+                        app.status = format!(
+                            "编辑器已退出，固定版本捕获未完成：{error}；草稿/备份保留，不会自动批准或合入"
+                        );
+                    }
                 }
                 redraw = true;
             }
@@ -649,7 +668,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             app.fullscreen = false;
                             app.panel = duet_workbench::app::Panel::Queue;
                             app.status =
-                                "焦点回 Duet · Tab 返回 Helix · 编辑器仍运行，不允许并发模型/合入"
+                                "焦点回 Duet · Tab 返回 Helix · 实现/合入前 :editor-stop 明确停止"
                                     .into();
                         } else if app.view == duet_workbench::app::View::Review
                             && key
@@ -856,7 +875,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 app.requested_conflict = None;
                 app.cancel_requested = false;
                 app.status =
-                    "Helix 仍在运行：Tab 返回，用 :wq 保存退出后再启动 AI、处理草稿或合入".into();
+                    "Helix 仍在运行：Tab 返回；实现/处理草稿/合入前，:editor-stop 明确停止（先保存）".into();
             }
             if std::mem::take(&mut app.cancel_requested)
                 && let Some(coding) = &mut coding

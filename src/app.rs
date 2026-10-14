@@ -1872,6 +1872,7 @@ impl App {
             "merge-task" => self.act(Action::MergeTask),
             "retry-task" => self.act(Action::RetryTask),
             "ask" => self.open_review_chat(),
+            "editor-stop" => self.mode = Mode::ConfirmStopEditor,
             "pause" => self.controls.push(RunControl::Pause),
             "resume" => self.controls.push(RunControl::Resume),
             "cancel" => self.cancel_requested = true,

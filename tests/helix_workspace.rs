@@ -324,6 +324,7 @@ fn real_helix_uses_duet_palette_in_cells_and_tracks_theme_changes() {
             directory: w.directory.clone(),
         },
         terminal,
+        executable: exe.clone(),
         workspace: w,
     };
     let wait = |s: &mut duet_workbench::editing::Session, color| {

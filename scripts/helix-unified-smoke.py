@@ -41,7 +41,8 @@ for line in sys.stdin:
     master,slave=pty.openpty();before=termios.tcgetattr(slave)
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
     process=None;output=bytearray();database=project/'.duet/workspace.db'
-    def launch():return subprocess.Popen([str(binary),'--helix',str(helix),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
+    cfg=base/'config.json';cfg.write_text(json.dumps({'helix_keepalive':False}))
+    def launch():return subprocess.Popen([str(binary),'--config',str(cfg),'--helix',str(helix),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
     def drain(seconds=.1):
         end=time.monotonic()+seconds
         while time.monotonic()<end:

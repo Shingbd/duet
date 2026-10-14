@@ -33,7 +33,7 @@ for line in sys.stdin:
  else:emit(reply)
 """);fake.chmod(0o700)
     env={**os.environ,'TERM':'xterm-256color','PATH':str(bin_dir)+':'+os.environ['PATH']}
-    config=base/'config.json';config.write_text(json.dumps({'helix_path':str(helix)}))
+    config=base/'config.json';config.write_text(json.dumps({'helix_path':str(helix),'helix_keepalive':False}))
     master,slave=pty.openpty();before=termios.tcgetattr(slave)
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
     process=None;output=bytearray();database=project/'.duet/workspace.db'

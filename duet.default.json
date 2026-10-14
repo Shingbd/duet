@@ -6,6 +6,7 @@
   "keymap_file": null,
   "editor": "vi",
   "helix_path": "hx",
+  "helix_keepalive": true,
   "review_editor": "helix",
   "agent": {
     "pi_path": "pi",

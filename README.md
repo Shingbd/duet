@@ -75,6 +75,8 @@ Default `hx` uses PATH or the already-installed executable-relative bundle. Duet
 
 An explicitly selected legacy native review backend remains available through `review_editor: "native"` / `--review-editor native`; it is never mislabeled Helix or silently selected when hx fails. Conflict/manual final-integration editing retains `h → Enter`.
 
+File switches now execute an internal F12 binding once, not typed :open sequences; first-load IO still applies. **Space q** saves the current file and returns focus with the same PID and other unsaved buffers intact. Ctrl+] only returns focus. Native :wq still exits its process; by default Duet reopens Helix without falling back to the native reader (editor undo history is not restored). Before implementation/integration, use host `:editor-stop → Enter`, or configure `helix_keepalive:false`.
+
 See [Helix setup/safety](docs/helix.md), [review discussion/publication](docs/review-editor.md), and [project tree](docs/project-tree.md).
 
 ## The workflow

@@ -32,6 +32,20 @@ Duet creates private per-session configuration under `.duet/helix-workspaces/<no
 - 退出工作台需终止确认；停止可能丢失未捕获的未保存文本，已保存草稿／项目文件保留。
 - 读取上下文时短暂暂停按键处理；错误／超时拒绝操作，不猜或使用过期代码。
 
+## Persistent code pane / 常驻代码区
+
+File switching uses an internal F12 binding and an owned open.json request, not typed Esc/:open/Enter input. The helper emits only a manifest-bound filename as a literal command expansion; code/filenames are not evaluated by a shell. Cached project files are backed up on first host opening, not on every revisit. First-time Git worktree/file loading can still take time.
+
+切文件通过内部 F12 与受管请求一次执行，不逐字输入命令；helper 只返回 manifest 绑定的字面文件名，不求值代码／文件名。项目文件首次宿主打开时备份，重复访问不重复拷贝；首次工作区／文件 IO 仍有开销。
+
+**Space q** saves the current file and returns focus to the sidebar without quitting Helix or publishing review. Other unsaved buffers and undo history remain; Ctrl+] returns without saving. These are the recommended save-return/focus-return controls. Native `:wq` / `:q` retain upstream semantics: the process exits; default `helix_keepalive:true` then reopens the last managed file with saved drafts and a real Helix pane. The prior screen stays during startup, rather than a native-reader flash. This is process reconstruction, **not** a pretend interception of :wq; closed-process undo/unsaved state is not recovered. Abnormal exit and explicit stop do not auto-retry; restart of Duet still launches no editor. Conflict/final-integration editors keep their original exit/capture lifecycle.
+
+**Space q** 保存当前文件并回侧栏，不退出／不发布审核；其他未保存缓冲区、撤销栈保留。Ctrl+] 不保存只返回，推荐使用这两个操作。原生 :wq / :q 仍退出进程；默认 keepalive 随后根据最后受管文件及已保存草稿重建真实 Helix，加载期间保留旧画面而不闪回原生阅读器。这是**进程重建，不是假称拦截 wq**，不恢复旧进程撤销／未保存状态。异常退出／明确停止不重试，重启 Duet 不启动编辑器；冲突／最终集成编辑沿用原退出捕获规则。
+
+Before implementation/deletion/merge, leave focus and use host `:editor-stop → Enter` for explicit termination, or choose `helix_keepalive:false` if ordinary :wq should release the editor interlock. Stopping warns about unsaved loss. A-p and F12 are reserved internal bindings; Space q overrides the managed space-menu q entry.
+
+实现／删除／合入前，回工作台 `:editor-stop → Enter` 明确停止，或配置 keepalive:false 使 wq 直接释放编辑器互斥。停止提示未保存丢失；A-p/F12 为内部保留键，Space q 为保存返回。
+
 ## Targets and immutable review / 目标与不可变审核
 
 Project edits current working files after backup; no commit. Review uses independent worktrees under `.duet/helix-workspaces/<nonce>/reviews/<index>`, based on the node baseline with only the bound file populated from fixed delivery/local draft. Git gutter compares to that baseline; Ctrl+D includes deleted comparison rows. Original delivery, main files/index/HEAD, original candidates and approvals are untouched by editing. Existing pending/historical nodes can be edited locally; publication keeps its [final-node-only boundary](review-editor.md#persistence-and-publication--持久化与发布).

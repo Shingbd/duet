@@ -1768,9 +1768,12 @@ fn render_editor(
     area: Rect,
     focused: bool,
     theme: Theme,
+    persistent: bool,
 ) {
     let block = theme.block(
-        if focused {
+        if focused && persistent {
+            " HELIX · Ctrl+] 侧栏 · Space q 保存返回 "
+        } else if focused {
             " HELIX · Ctrl+] → Duet · :wq 保存退出 "
         } else {
             " HELIX · Tab 回编辑器 "
@@ -2070,7 +2073,14 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
         } else {
             area
         };
-        render_editor(frame, screen, area, app.editor_focused, theme);
+        render_editor(
+            frame,
+            screen,
+            area,
+            app.editor_focused,
+            theme,
+            app.config.helix_keepalive && !app.editor_conflict,
+        );
         return;
     }
     if app.view == View::Review

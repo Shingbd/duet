@@ -30,6 +30,7 @@ pub struct Session {
     pub target: Target,
     pub workspace: crate::helix_workspace::Workspace,
     pub cwd: PathBuf,
+    pub executable: PathBuf,
 }
 /// Only executable-relative bundled tools are considered; never search the opened repository.
 pub fn helix_candidates(
@@ -247,33 +248,70 @@ pub fn start(
     app.editor_focused = true;
     app.editor_project = matches!(target, Target::Project { .. });
     app.editor_conflict = matches!(target, Target::Integration { .. });
-    app.status = "Helix 在代码框内运行 · Ctrl+] 切回 Duet · :wq 保存退出 · 不自动合入".into();
+    app.status = if app.config.helix_keepalive && !app.editor_conflict {
+        "Helix 常驻代码框 · Ctrl+] 侧栏 · Space q 保存返回 · :editor-stop 明确停止".into()
+    } else {
+        "Helix 在代码框内运行 · Ctrl+] 切回 Duet · :wq 保存退出 · 不自动合入".into()
+    };
     Ok(Session {
         terminal,
         target,
         workspace,
         cwd,
+        executable,
     })
+}
+pub fn reopen(session: &mut Session, app: &mut App, rows: u16, cols: u16) -> Result<()> {
+    let file = session
+        .workspace
+        .active
+        .as_ref()
+        .context("没有受管打开文件")?
+        .clone();
+    crate::helix_workspace::Workspace::sync_saved(&session.workspace.directory, app)?;
+    session.workspace.refresh_config()?;
+    let terminal = crate::embedded::PtyEditor::spawn_managed(
+        &session.executable,
+        &session.cwd,
+        &file,
+        rows,
+        cols,
+        Some(&session.workspace.config_home()),
+    )?;
+    session.terminal = terminal;
+    session.workspace.unobserved.clear();
+    session.workspace.pending = None;
+    app.helix_unknown = false;
+    app.editor_focused = false;
+    app.panel = crate::app::Panel::Queue;
+    app.review_compare = false;
+    app.status = "已返回侧栏 · 原生退出后 Helix 已重建；Space q 保存返回可保持原进程".into();
+    Ok(())
 }
 pub fn switch_project(session: &mut Session, store: &WorkspaceStore, path: &str) -> Result<()> {
     ensure!(
         !matches!(session.target, Target::Integration { .. }),
         "请先退出冲突编辑器"
     );
+    let count = session.workspace.manifest.bindings.len();
     let file = session.workspace.project(path)?;
+    let first = session.workspace.manifest.bindings.len() > count;
     if session.workspace.active.as_ref() == Some(&file) {
         return Ok(());
     }
-    let command = crate::helix_workspace::open_command(&file)?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let backup = store
         .directory()
         .join("backups")
         .join(format!("helix-switch-{nonce}"));
-    conflict::private_dir(&backup)?;
-    fs::copy(&file, backup.join("before-file"))?;
-    fs::write(backup.join("target.txt"), file.to_string_lossy().as_bytes())?;
-    session.terminal.send(&command)?;
+    if first {
+        conflict::private_dir(&backup)?;
+        fs::copy(&file, backup.join("before-file"))?;
+        fs::write(backup.join("target.txt"), file.to_string_lossy().as_bytes())?;
+    }
+    session
+        .workspace
+        .request_open(&mut session.terminal, &file)?;
     session.workspace.active = Some(file);
     session.target = Target::Workspace {
         directory: session.workspace.directory.clone(),
@@ -291,8 +329,8 @@ pub fn switch_review(session: &mut Session, app: &mut App, repo: &Repository) ->
         return Ok(false);
     }
     session
-        .terminal
-        .send(&crate::helix_workspace::open_command(&file)?)?;
+        .workspace
+        .request_open(&mut session.terminal, &file)?;
     session.workspace.active = Some(file);
     session.target = Target::Workspace {
         directory: session.workspace.directory.clone(),
@@ -325,7 +363,10 @@ pub fn poll_bridge(session: &mut Session, app: &mut App) -> Result<bool> {
         app.editor_project = true;
         app.review_compare = false;
         ensure!(
-            matches!(frame.meta.action.as_str(), "leave" | "sync" | "publish"),
+            matches!(
+                frame.meta.action.as_str(),
+                "leave" | "sync" | "publish" | "save-back"
+            ),
             "项目代码讨论尚未开放；未发送代码"
         );
         let path = binding
@@ -395,7 +436,7 @@ pub fn poll_bridge(session: &mut Session, app: &mut App) -> Result<bool> {
                 app.status = "尚无可应用建议；Ctrl+g 先提问".into();
             }
         }
-        "leave" => {
+        "leave" | "save-back" => {
             app.editor_focused = false;
             app.panel = crate::app::Panel::Queue;
         }

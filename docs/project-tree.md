@@ -36,12 +36,12 @@ Use Helix `:w`, `:wa`, `:wqa` or its ordinary buffer commands explicitly. `:wq` 
 
 - Git tree includes tracked/deleted/untracked files and optionally ignored files, capped at 5000 entries; it is not limited to the old 80-file snapshot reader. Non-Git folders use bounded filesystem traversal (depth 32).
 - Unix PTY; ordinary UTF-8 files up to 1 MiB. No mouse tree. Review command/stdin bridge is described separately in [Helix](helix.md).
-- Filename spaces are supported. Literal single/backtick quoting prevents percent/shell interpolation, including filenames containing spaces, percent or shell metacharacters. Control characters and filenames containing both single quotes and backticks are rejected by host switching; use Helix's picker where necessary. Original buffers are preserved on rejection.
+- Filename spaces are supported. Literal single/backtick quoting prevents percent/shell interpolation, including filenames containing spaces, percent or shell metacharacters. The internal F12/open.json bridge now supports quote/backtick names too; unsafe relative paths/control-character filenames remain rejected. Original buffers are preserved on rejection.
 - Refresh is explicit, not a background filesystem watcher. For non-Git folders, no Git ignore/status semantics are promised.
 
 - Git 文件树包含跟踪、删除、未跟踪及可选忽略文件，最多 5000 项，不再受旧 80 文件快照阅读限制。非 Git 文件夹使用有界遍历，深度 32。
 - Unix PTY，最多 1 MiB 的 UTF-8 普通文件；无鼠标树操作；审核命令／stdin 桥另见 [Helix](helix.md)。
-- 支持空格文件名。宿主使用单引号／反引号字面引用，支持百分号与 shell 特殊字符而不插值。拒绝控制字符或同时含单引号及反引号的文件名，原缓冲区保留；可在 Helix 自身文件选择器手动打开。
+- 支持空格文件名。宿主使用单引号／反引号字面引用，支持百分号与 shell 特殊字符而不插值。现在 F12/open.json 内部桥也支持引号／反引号名字；不安全相对路径／控制字符文件名仍拒绝，原缓冲区保留；可在 Helix 自身文件选择器手动打开。
 - 刷新为明确操作，不是后台监视器；非 Git 文件夹不承诺 Git 忽略/状态语义。
 
 Validation: `tests/file_tree.rs`, `scripts/project-tree-smoke.py` (real Helix 25.07.1, nested/spaced paths, stable PTY PID, two unsaved buffers, explicit save-all, backups, untouched HEAD), plus existing review/Helix/PTY regression suites. No live models are called.
