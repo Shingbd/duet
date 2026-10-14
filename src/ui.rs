@@ -335,13 +335,13 @@ fn draw_cached(
             Line::from(Span::styled(
                 if app.editor_focused {
                     if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
-                }else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
+                }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · Shift+Tab 查看验收/日志 · j/k 滚动"," Tests running · Ctrl+X / :verify-stop cancel · Shift+Tab evidence · j/k scroll").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
                     if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · Ctrl+] 回工作台；编辑按键不触发外部动作".into()}
                 }else if app.config.language==crate::config::Language::English {
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
 format!(
-                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 已读 · {} 命令 · {} 帮助",
+                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 测试 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
                         format!(
                             "{} 批准 · 自动实时预览 · {} 合并 · {} 删除 · ",
@@ -364,7 +364,7 @@ format!(
                     app.keymap.hint(Action::NextPanel),
                     app.keymap.hint(Action::Explain),
                     app.keymap.hint(Action::Fullscreen),
-                    app.keymap.hint(Action::MarkRead),
+                    app.keymap.hint(Action::Verify),
                     app.keymap.hint(Action::Palette),
                     app.keymap.hint(Action::Help)
                 )
@@ -810,17 +810,47 @@ format!(
             100,
             8,
         ),
-        Mode::ConfirmRead => popup(
-            frame,
-            theme,
-            " 标记阅读完成？ ",
-            vec![
-                Line::from("Enter 确认 · Esc 取消"),
-                Line::from("仅标记已读，不批准代码。"),
-            ],
-            64,
-            7,
-        ),
+        Mode::ConfirmVerification { request, scroll } => {
+            let mut lines = vec![
+                Line::from(format!(
+                    "节点：{} · 固定版本 {}",
+                    request.node, request.snapshot
+                )),
+                Line::from(format!(
+                    "命令 argv：{}",
+                    serde_json::to_string(&request.spec.argv).unwrap_or_default()
+                )),
+                Line::from(format!(
+                    "关联验收：{:?} · 超时 {} 秒",
+                    request.spec.criteria, request.spec.timeout_secs
+                )),
+                Line::from("只测试该固定交付，在独立工作区；不含 Helix 未发布草稿/后续候选修改。"),
+                Line::from(
+                    "测试可执行任意项目代码／联网／访问账号文件，worktree 不是沙箱；不要打印凭据。",
+                ),
+                Line::from("空关联只记命令结果；选择验收序号是人类声明覆盖，不是自动语义证明。"),
+                Line::from("不批准/合入/调用模型；Enter 明确执行 / Esc 不执行"),
+            ];
+            if let Some(node) = app.selected_node() {
+                for (i, c) in node.contract.acceptance.iter().enumerate() {
+                    lines.push(Line::from(format!("{} {}", i + 1, safe_text(c))));
+                }
+            }
+            let area = centered(frame.area(), 110, 24);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .style(Style::default().bg(theme.bg).fg(theme.text))
+                    .block(theme.block(
+                        " 授权固定版本测试 · j/k 浏览 · Enter 执行 / Esc 取消 ",
+                        true,
+                    ))
+                    .wrap(Wrap { trim: false })
+                    .scroll((*scroll, 0)),
+                area,
+            );
+        }
+        Mode::ConfirmRead => {} // Unreachable legacy UI mode; no read action.
         Mode::ConfirmNodeApproval {
             checkpoint,
             node_id,
@@ -932,14 +962,14 @@ fn queue(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                 None if Some(row) == selected_row => theme.accent,
                 None => theme.muted,
             };
-            let marker = if item.read { "✓" } else { "○" };
+
             let style = if Some(row) == selected_row {
                 Style::default().fg(color).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(color)
             };
             ListItem::new(Line::from(format!(
-                "{} {kind} {marker} {}",
+                "{} {kind} {}",
                 if Some(row) == selected_row {
                     "›"
                 } else {
@@ -1039,14 +1069,13 @@ fn review_tree(frame: &mut Frame, app: &App, area: Rect, theme: Theme) {
                 }
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!(
-                        "{} {} {} {}",
+                        "{} {} {}",
                         if index == app.selected { "›" } else { " " },
                         match item.change {
                             Some(crate::checkpoint::ChangeKind::Added) => "A",
                             Some(crate::checkpoint::ChangeKind::Deleted) => "D",
                             _ => "M",
                         },
-                        if item.read { "✓" } else { "○" },
                         safe_text(&item.title)
                     ),
                     Style::default().fg(color),
@@ -2239,7 +2268,10 @@ fn evidence(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut 
     frame.render_widget(
         Paragraph::new(style_markdown(&cache.lines, app.light))
             .block(theme.block(
-                app.tr(" 说明 / 验证 ", " Evidence / verification "),
+                app.tr(
+                    " 验收 / 测试证据 · v 测试 ",
+                    " Acceptance / test evidence · v ",
+                ),
                 app.panel == Panel::Evidence,
             ))
             .scroll((

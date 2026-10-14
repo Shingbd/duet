@@ -343,6 +343,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut last_input = Instant::now();
     let mut advisor: Option<duet_workbench::conflict_ai::Advisor> = None;
     let mut editor: Option<duet_workbench::editing::Session> = None;
+    let mut verification: Option<duet_workbench::verification::Run> = None;
+    duet_workbench::verification::recover(&mut app);
     app.helix_review = config.review_editor == duet_workbench::config::ReviewEditor::Helix;
     let mut review_runtime = duet_workbench::review_chat::Runtime::default();
     let review_repo = Repository::open(store.directory().parent().unwrap()).ok();
@@ -373,6 +375,43 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         }
     }
     loop {
+        if std::mem::take(&mut app.requested_verification_cancel)
+            && let Some(run) = &mut verification
+        {
+            run.cancel();
+        }
+        if let Some(run) = &mut verification {
+            if run.poll(&mut app, &mut store)? {
+                redraw = true;
+            }
+            if run.finished() {
+                app.status = format!("测试 {} · 不自动批准/合入", run.record.outcome.label());
+                verification = None;
+                redraw = true;
+            }
+        }
+        if let Some(request) = app.requested_verification.take() {
+            let result = (|| -> Result<duet_workbench::verification::Run> {
+                ensure!(
+                    verification.is_none()
+                        && advisor.is_none()
+                        && review_runtime.chat.is_none()
+                        && coding.as_ref().is_none_or(|c| c.is_finished()),
+                    "请先停止当前测试/AI会话；没有执行新命令"
+                );
+                duet_workbench::verification::Run::start(request, &mut app, &mut store)
+            })();
+            match result {
+                Ok(run) => {
+                    app.status =
+                        "测试运行中 · Ctrl+X / :verify-stop 停止 · 固定交付，不含草稿".into();
+                    verification = Some(run);
+                }
+                Err(e) => app.status = format!("未运行测试：{e}"),
+            };
+            redraw = true;
+        }
+        app.verification_active = verification.is_some();
         if review_runtime.poll(&mut app, &mut store)? {
             redraw = true;
             save_since.get_or_insert_with(Instant::now);
@@ -632,7 +671,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
         if app.quit {
             break;
         }
-        let wait = if review_runtime.chat.is_some()
+        let wait = if verification.is_some()
+            || review_runtime.chat.is_some()
             || editor.is_some()
             || advisor.is_some()
             || coding.as_ref().is_some_and(|run| !run.is_finished())
@@ -660,6 +700,16 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
             for _ in 0..64 {
                 let mut changed = true;
                 match event::read()? {
+                    Event::Key(key)
+                        if verification.is_some()
+                            && !app.editor_focused
+                            && key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            && key.code == crossterm::event::KeyCode::Char('x') =>
+                    {
+                        app.requested_verification_cancel = true;
+                    }
                     Event::Key(_)
                         if editor
                             .as_ref()
@@ -902,7 +952,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     app.status = format!("未打开内嵌 Helix：{error}");
                 }
             }
-            if editor.is_some()
+            if (editor.is_some() || verification.is_some())
                 && (app.requested_delete.is_some()
                     || app.requested_start.is_some()
                     || app.requested_retry.is_some()
@@ -922,8 +972,11 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 app.controls.clear();
                 app.requested_conflict = None;
                 app.cancel_requested = false;
-                app.status =
-                    "Helix 仍在运行：Tab 返回；实现/处理草稿/合入前，:editor-stop 明确停止（先保存）".into();
+                app.status = if verification.is_some() {
+                    "测试仍运行：Ctrl+X / :verify-stop 明确停止后再实现/删除/合入".into()
+                } else {
+                    "Helix 仍在运行：Tab 返回；实现/处理草稿/合入前，:editor-stop 明确停止（先保存）".into()
+                };
             }
             if std::mem::take(&mut app.cancel_requested)
                 && let Some(coding) = &mut coding
@@ -1345,6 +1398,9 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 }
             }
         }
+    }
+    if let Some(run) = &mut verification {
+        run.stop(&mut app, &mut store)?;
     }
     review_runtime.stop()?;
     if let Some(mut a) = advisor.take() {

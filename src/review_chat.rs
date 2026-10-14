@@ -87,7 +87,10 @@ impl Runtime {
         if let Some((context, question)) = app.requested_review_chat.take() {
             let result = (|| -> Result<()> {
                 ensure!(self.chat.is_none(), "代码讨论仍在进行，未排队或重复发送");
-                ensure!(!busy, "请先结束 AI 写入/冲突顾问/Helix，再进行只读代码讨论");
+                ensure!(
+                    !busy && !app.verification_active,
+                    "请先结束 AI 写入/冲突顾问/测试，再进行只读代码讨论"
+                );
                 let mut prior_bytes = 0;
                 let prior = app
                     .review_messages

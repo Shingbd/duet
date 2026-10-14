@@ -170,17 +170,16 @@ fn start_delete_follow_shortcuts_are_configurable_contextual_and_confirmed() {
 fn merge_preview_requires_second_confirmation_and_retired_v_never_tracks() {
     use duet_workbench::merge::MergePreview;
     let mut app = App::empty(Keymap::default());
-    assert!(
+    assert_eq!(
         app.keymap
-            .resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
-            .is_none()
+            .resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        Some(Action::Verify)
     );
     let legacy =
         Keymap::from_overrides(BTreeMap::from([("follow_live".into(), vec!["v".into()])])).unwrap();
-    assert!(
-        legacy
-            .resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
-            .is_none()
+    assert_eq!(
+        legacy.resolve(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        Some(Action::Verify)
     );
     let p = MergePreview {
         task_id: "1001".into(),
@@ -496,10 +495,9 @@ fn unread_backpressure_pauses_until_human_finishes() {
     let mut second = item();
     second.title = "second.rs".into();
     assert!(app.enqueue(second));
-    assert!(!app.can_continue());
-    assert!(!app.enqueue(item()));
+    assert!(app.can_continue()); // Only real node reviews provide backpressure.
     app.act(Action::MarkRead);
-    app.handle_key(key(KeyCode::Enter));
+    assert!(matches!(app.mode, Mode::Browse));
     assert!(app.can_continue());
 }
 
@@ -555,8 +553,8 @@ fn mark_read_requires_confirmation() {
     assert!(!app.current().unwrap().read);
     app.act(Action::MarkRead);
     app.handle_key(key(KeyCode::Enter));
-    assert!(app.current().unwrap().read);
-    assert!(app.status.contains("未批准"));
+    assert!(!app.current().unwrap().read);
+    assert!(app.keymap.resolve(key(KeyCode::Char('m'))).is_none());
 }
 
 #[test]

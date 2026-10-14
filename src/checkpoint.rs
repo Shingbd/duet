@@ -91,6 +91,36 @@ impl Repository {
         String::from_utf8(output.stdout).context("Git 输出不是 UTF-8")
     }
 
+    pub fn verification_guard(&self) -> Result<()> {
+        let output = self.git_output(
+            &[
+                "config",
+                "--get-regexp",
+                r"^filter\..*\.(clean|smudge|process)$",
+            ],
+            None,
+        )?;
+        ensure!(
+            output.status.code() == Some(1),
+            "自定义 Git clean/smudge/process filter 不支持受控验证"
+        );
+        Ok(())
+    }
+    pub fn verification_clean(&self, snapshot: &str) -> Result<bool> {
+        let flags = self.git(&["ls-files", "-v"], None)?;
+        if flags.lines().any(|l| {
+            l.starts_with("S ") || l.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        }) {
+            return Ok(false);
+        }
+        Ok(self.baseline()?.commit == snapshot
+            && self
+                .git(&["status", "--porcelain", "--untracked-files=no"], None)?
+                .is_empty()
+            && self
+                .git(&["diff", "--name-only", snapshot, "--"], None)?
+                .is_empty())
+    }
     pub fn tree(&self, commit: &str) -> Result<String> {
         let commit = self.resolve_snapshot(commit)?.commit;
         Ok(self

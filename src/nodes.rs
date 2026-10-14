@@ -259,6 +259,8 @@ pub struct NodeRecord {
     pub verification: Verification,
     pub review: Review,
     pub reviewed_checkpoint: Option<String>,
+    #[serde(default)]
+    pub verification_runs: Vec<crate::verification::Record>,
     pub attempts: Vec<Attempt>,
 }
 impl NodeRecord {
@@ -269,6 +271,7 @@ impl NodeRecord {
             verification: Verification::Unverified,
             review: Review::Pending,
             reviewed_checkpoint: None,
+            verification_runs: vec![],
             attempts: Vec::new(),
         }
     }

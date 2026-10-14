@@ -19,3 +19,4 @@ pub mod rpc;
 pub mod storage;
 pub mod task_ops;
 pub mod ui;
+pub mod verification;

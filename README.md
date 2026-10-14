@@ -91,6 +91,7 @@ Discuss → Confirm the plan → Implement nodes → Review checkpoints
 | Discuss | `1` → `i`, enter your request | Read-only AI discussion; no automatic implementation |
 | Start or continue | `s` → `Enter` | Write access in the task worktree for the confirmed plan |
 | Review/edit draft | `2`, Tab; `{` / `}` in workbench focus switch nodes | Full-code view and independent local edits; no automatic approval |
+| Test a fixed node | `v`, configure argv/criteria, Enter then Enter | Execute trusted project code in an independent snapshot worktree; no approval/merge |
 | Approve a node | `a` → `Enter` in review | Approve that exact checkpoint; no testing or merging |
 | Continue after a review pause | `p` | Explicitly resume; approval alone does not resume execution |
 | Integrate | `g` | Open the whole-task integration diff or conflict draft |
@@ -153,7 +154,7 @@ your-project/.duet/
 
 ## Current limits
 
-The verification Runner and fixed-version test evidence are **not yet implemented**. Acceptance criteria remain unverified unless independently recorded; external maintenance tests do not change node verification status.
+The first **fixed-version verification Runner** is implemented: press `v` in workbench focus on a delivered node, configure `verify JSON`, then preview and explicitly confirm. Unmapped commands record exit status without claiming acceptance; mapped criteria are human-declared test coverage, not semantic proof. Evidence survives restart without re-execution, failure blocks integration, and new snapshots/contracts do not inherit old results. Final integrated-version Runner, sandboxing and a richer criteria-mapping editor remain pending. See [verification](docs/verification.md). The file-read feature (`m`, read markers/counts) is removed; conflict `m` still marks resolution.
 
 Also pending: arbitrary historical-node rework, original Pi session/queue recovery, independent review agents, multi-agent scheduling, background startup/snapshotting, and an OS sandbox. The fallback fixed-baseline reader loads the first 80 files, up to 1 MiB per file; project tree navigation supports up to 5000 entries, and node-change review has no 80-file limit.
 
@@ -178,6 +179,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 - [Embedded Helix — bilingual](docs/helix.md)
 - [Configuration reference — bilingual](docs/configuration.md)
 - [Detailed operating guide — Chinese](docs/user-guide.zh-CN.md)
+- [Fixed-version verification Runner — bilingual](docs/verification.md)
 - [Task and node contracts](docs/nodes.md)
 - [Task pipeline and integration](docs/task-pipeline.md)
 - [Implementation status and history](docs/phase-1.md)

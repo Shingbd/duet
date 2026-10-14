@@ -720,13 +720,12 @@ fn running_diff_automatically_follows_selected_node_and_preserves_position() {
     app.items[app.selected].scroll = 3;
     app.act(Action::ApproveNode);
     assert_eq!(app.mode, duet_workbench::app::Mode::Browse);
-    assert!(
-        app.keymap
-            .resolve(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('v'),
-                crossterm::event::KeyModifiers::NONE
-            ))
-            .is_none()
+    assert_eq!(
+        app.keymap.resolve(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('v'),
+            crossterm::event::KeyModifiers::NONE
+        )),
+        Some(Action::Verify)
     );
     poll(&mut run, &mut app, &mut store);
     assert_ne!(app.review_checkpoint(), Some(first.as_str()));

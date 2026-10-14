@@ -794,6 +794,7 @@ impl WorkspaceStore {
                 item.evidence_scroll = evidence_scroll;
             }
         }
+        crate::verification::recover(app);
         Ok(())
     }
 

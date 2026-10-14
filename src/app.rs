@@ -57,6 +57,10 @@ pub enum Mode {
         preview: crate::merge::MergePreview,
     },
     ConfirmRead,
+    ConfirmVerification {
+        request: Box<crate::verification::Request>,
+        scroll: u16,
+    },
     ConfirmStart {
         task_id: String,
         plan: String,
@@ -178,6 +182,9 @@ pub struct App {
     pub editor_project: bool,
     pub editor_conflict: bool,
     pub requested_editor: Option<crate::embedded::Selection>,
+    pub requested_verification: Option<crate::verification::Request>,
+    pub requested_verification_cancel: bool,
+    pub verification_active: bool,
     pub requested_editor_stop: bool,
     pub name: String,
     pub content_revision: u64,
@@ -360,6 +367,9 @@ impl App {
             editor_project: false,
             editor_conflict: false,
             requested_editor: None,
+            requested_verification: None,
+            requested_verification_cancel: false,
+            verification_active: false,
             requested_editor_stop: false,
             name: "工作台".into(),
             content_revision: 0,
@@ -527,7 +537,7 @@ impl App {
             item.intent = intent.clone();
             item.explanation = attempt.map(|a| a.summary.clone()).unwrap_or_default();
             item.evidence = format!(
-                "验收：{:?} · 人工审核：{:?}\n测试 Runner 未接入{}",
+                "验收：{:?} · 人工审核：{:?}\nv 明确运行固定版本测试{}",
                 node.verification,
                 node.review,
                 attempt
@@ -684,6 +694,14 @@ impl App {
                     Review::ChangesRequested => "↺",
                 };
                 let verification = match node.verification {
+                    Verification::Unverified
+                        if node.verification_runs.last().is_some_and(|r| {
+                            r.outcome == crate::verification::Outcome::Running
+                                && Some(r.snapshot.as_str()) == node.checkpoint()
+                        }) =>
+                    {
+                        "◐"
+                    }
                     Verification::Unverified => "○",
                     Verification::Passed => "✓",
                     Verification::Failed => "×",
@@ -832,14 +850,14 @@ impl App {
         let mut blocks = vec![
             (
                 format!(
-                    "验收：{} · 人工审核：{}",
+                    "验收（关联测试）：{} · 人工审核：{}",
                     verification_label(attempt.map_or(node.verification, |a| a.verification)),
                     review_label(attempt.map_or(node.review, |a| a.review))
                 ),
                 true,
             ),
             (
-                "测试 Runner 未接入；文档复选框不代表真实验证或人工批准。".into(),
+                "v 配置/授权测试 · :verify-stop 停止 · 固定交付，不含未发布草稿；命令通过不自动批准。".into(),
                 true,
             ),
         ];
@@ -847,8 +865,52 @@ impl App {
             blocks.push((format!("仓内越界：{}", a.scope_violations.join("、")), true));
         }
         for (index, acceptance) in node.contract.acceptance.iter().enumerate() {
-            blocks.push((format!("□ 未验证 · 验收条件 {}", index + 1), true));
+            let evidence = version.and_then(|v| crate::verification::criterion(node, v, index + 1));
+            let status = evidence.map_or("○ 未验证", |r| r.outcome.label());
+            blocks.push((format!("{status} · 验收条件 {}", index + 1), true));
+            if let Some(r) = evidence {
+                blocks.push((
+                    format!(
+                        "关联测试 {} · 固定版本 {} · 由人类声明覆盖，非语义证明",
+                        r.id,
+                        &r.snapshot[..r.snapshot.len().min(12)]
+                    ),
+                    false,
+                ));
+            }
             blocks.push((acceptance.clone(), false));
+        }
+        if let Some(r) = node
+            .verification_runs
+            .iter()
+            .rev()
+            .find(|r| Some(r.snapshot.as_str()) == version)
+        {
+            blocks.push((format!("测试证据 · {} · {}", r.outcome.label(), r.id), true));
+            blocks.push((format!("固定版本：{}\n命令 argv：{}\n关联验收：{:?}\n超时：{}s · exit：{:?}\n环境：{}\n产物：{}",r.snapshot,serde_json::to_string(&r.spec.argv).unwrap_or_default(),r.spec.criteria,r.spec.timeout_secs,r.exit_code,r.environment,r.directory.display()),false));
+            blocks.push((
+                if r.spec.criteria.is_empty() {
+                    "未关联验收；此命令通过不改变验收条件。"
+                } else {
+                    "关联仅表示人类选择该测试覆盖这些条件；不证明任意业务语义。"
+                }
+                .into(),
+                true,
+            ));
+            blocks.push((
+                format!(
+                    "日志预览{}（最多末尾 4 KiB；本地 record.json 含有界完整日志）",
+                    if r.truncated { " · 已截断" } else { "" }
+                ),
+                true,
+            ));
+            let mut start = r.output.len().saturating_sub(4096);
+            while !r.output.is_char_boundary(start) {
+                start += 1;
+            }
+            blocks.push((format!("```text\n{}\n```", &r.output[start..]), false));
+        } else {
+            blocks.push(("暂无固定版本测试证据 · v 配置并明确运行".into(), true));
         }
         if self.explain
             && let Some(a) = attempt
@@ -910,15 +972,7 @@ impl App {
         if self.tasks.iter().any(|t| !t.nodes.is_empty()) {
             return self.tasks.iter().map(|t| t.pending_reviews()).sum();
         }
-        let changed = self.changed_indices();
-        if changed.is_empty() {
-            self.file_indices()
-                .iter()
-                .filter(|&&i| !self.items[i].read)
-                .count()
-        } else {
-            changed.iter().filter(|&&i| !self.items[i].read).count()
-        }
+        0 // Legacy file-read flags no longer drive workflow/backpressure.
     }
     pub fn file_indices(&self) -> Vec<usize> {
         let mut paths = std::collections::BTreeMap::new();
@@ -1276,6 +1330,9 @@ impl App {
             }
             Mode::Input { search, text } => {
                 match key.code {
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        text.clear()
+                    }
                     KeyCode::Esc => self.mode = Mode::Browse,
                     KeyCode::Enter => {
                         let is_search = *search;
@@ -1543,16 +1600,22 @@ impl App {
                 }
                 return;
             }
-            Mode::ConfirmRead => {
+            Mode::ConfirmVerification { request, scroll } => {
+                if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+                    *scroll = scroll.saturating_add(1);
+                } else if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                    *scroll = scroll.saturating_sub(1);
+                }
                 if key.code == KeyCode::Enter {
-                    if let Some(item) = self.items.get_mut(self.selected) {
-                        item.read = true;
-                        self.status = "已读 · 未批准".into();
-                    }
+                    self.requested_verification = Some(*request.clone());
                     self.mode = Mode::Browse;
                 } else if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
                 }
+                return;
+            }
+            Mode::ConfirmRead => {
+                self.mode = Mode::Browse;
                 return;
             }
             Mode::Browse => {}
@@ -1779,13 +1842,40 @@ impl App {
             Action::Theme => self.light = !self.light,
             Action::ApproveNode if self.view == View::Review => self.request_node_approval(),
             Action::ApproveNode => self.status = "请按 2 进入审核，再批准当前节点版本".into(),
-            Action::MarkRead if self.view == View::Tasks => {
-                self.status = "请在审核视图标记文件已读；节点批准使用 :approve-node".into()
-            }
-            Action::MarkRead => {
-                if self.current().is_some() {
-                    self.mode = Mode::ConfirmRead;
-                }
+            Action::MarkRead => self.status = "已读功能已移除；v 测试，a 明确批准".into(),
+            Action::Verify => {
+                self.review_chat_open = false;
+                let Some(node) = self.selected_node() else {
+                    self.status = "请选择已交付节点，再按 v".into();
+                    return;
+                };
+                let spec = node
+                    .verification_runs
+                    .last()
+                    .map(|r| r.spec.clone())
+                    .unwrap_or(crate::verification::Spec {
+                        argv: if self
+                            .project_tree
+                            .entries
+                            .iter()
+                            .any(|e| e.path == "Cargo.toml")
+                        {
+                            vec!["cargo".into(), "test".into(), "--offline".into()]
+                        } else {
+                            vec![]
+                        },
+                        criteria: vec![],
+                        timeout_secs: 300,
+                    });
+                self.mode = Mode::Input {
+                    search: false,
+                    text: format!(
+                        "verify {}",
+                        serde_json::to_string(&spec).unwrap_or_default()
+                    ),
+                };
+                self.status =
+                    "测试配置：Ctrl+U 清空再粘贴 verify JSON；Enter 预览，再 Enter 明确执行".into();
             }
             Action::StartTask if self.view == View::Tasks => {
                 if let Some(task) = self.selected_task() {
@@ -1891,6 +1981,19 @@ impl App {
             "project" => self.act(Action::Project),
             "knowledge" => self.view = View::Knowledge,
             "read" => self.act(Action::MarkRead),
+            "verify-stop" => self.requested_verification_cancel = true,
+            "verify" => self.act(Action::Verify),
+            s if s.starts_with("verify ") => {
+                match crate::verification::request(self, s.trim_start_matches("verify ").trim()) {
+                    Ok(request) => {
+                        self.mode = Mode::ConfirmVerification {
+                            request: Box::new(request),
+                            scroll: 0,
+                        }
+                    }
+                    Err(e) => self.status = format!("未授权测试：{e}"),
+                }
+            }
             "approve-node" => self.request_node_approval(),
             "start-task" => self.act(Action::StartTask),
             "delete-selected" => self.act(Action::DeleteSelected),

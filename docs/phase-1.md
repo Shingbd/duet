@@ -23,6 +23,7 @@ g 冲突进入独立集成草稿，y 确认只读 AI 解释原因/选择影响�
 嵌入式 Helix 延迟实测及优化：6000行、120×32本机PTY、50次字形反馈，release p50 17.88→7.28ms（独立Helix6.27），debug37.93→17.13ms。Unix poll同时监听stdin与子PTY输出，消除默认16ms固定等待；普通编辑器键／粘贴不先重画旧帧、不标记SQLite待保存，实际PTY变更及桥接权威草稿仍原样绘制／持久化。未降低轮询间隔忙转，未改变授权／immutable／stale／互斥边界。新增子输出唤醒单测，181项测试、十五组PTY、严格fmt/clippy与debug/release通过；首次Git／文件加载及SSH端到端不在该测量内，详见performance.md。
 按用户要求打开Duet即默认预载真实Helix（helix_startup:true，可关闭），选中可用项目文件／当前快照审核草稿，空／无可用文件为私有欢迎页。保留视图／侧栏焦点，首次文件入口复用PID；失败说明不重试，明确停止不自动重启；明确native／活动CLI编码不预载。重启启动全新编辑器，不恢复旧执行／未保存状态，不启动模型；首次目标备份、原主文件/index/HEAD与旧交付/批准保护不变。新增startup真Helix测试（预载、首次同PID、全新重启、空项目欢迎页保存返回、显式禁用、坏路径失败），181项Rust与十六组PTY、严格fmt/clippy、debug/release通过。
 左侧任务／节点长状态文字改为紧凑符号，节点尾部依次实现／审核／验证（◇✓○为已实现／已批准／未验证），不以批准掩盖执行失败，不把实现当验收。任务状态亦符号化；详情保留完整文本，?帮助增加中英图例。新增八种执行状态及独立审核／验证回归，182项Rust、十六组PTY、fmt/clippy及debug/release通过；未改工作流权限／持久记录。
+按用户要求移除普通已读快捷键／确认框／列表标记／文件积压计数；旧SQLite字段/API兼容但不参与流程，节点审批背压和冲突m标记解决保留。首版Unix固定交付Runner已接通：v编辑JSON配置（argv/criteria/timeout），可Ctrl+U清空，Enter预览（j/k浏览全参数）、再Enter明确执行；独立snapshot worktree，命令直接argv非隐式shell，绑定任务／节点／契约／固定版本、时戳、退出码、环境摘要与有界日志。空关联只记命令结果，人工声明覆盖全部条件且测试通过才记录Passed；部分覆盖Unverified，失败/超时/源码改变Error阻止合入，取消/重启不解除已有失败，新版本/契约不继承旧结果，不改批准。异步有界IO，约200ms持久化，Ctrl+X/verify-stop取消并回收进程组，退出停止、重启旧Running标Interrupted不重跑。Gitfilter保守拒绝，结束检查HEAD/index隐藏标志/跟踪源码变化；环境allowlist不存值、常见凭据参数/日志保护，不是完整DLP／OS沙箱／hermetic环境，可信测试仍能联网／访问账号文件。不自动测试／模型／批准／合入。右栏改验收＋真实测试证据与日志；190项Rust、十七组PTY（新Runner含native和真实Helix）、fmt/clippy、debug/release验证；未启动真实模型或用户任务测试。最终集成Runner／GUI映射／沙箱／自动清理仍待扩展。详见docs/verification.md。
 下方阶段记录保留历史状态/测试数量，不代表当前能力倒退。
 
 ## 实际交付
