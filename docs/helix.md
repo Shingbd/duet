@@ -16,6 +16,12 @@ Duet creates private per-session configuration under `.duet/helix-workspaces/<no
 
 每次会话在私有目录生成配套配置／缓存，主题与 Duet 同步，关闭自动格式化，不改写或导入全局 Helix 配置。除桥接键及内部保留 A-p 外，普通按键沿用 Helix。人工明确输入的 shell 命令仍可调用 /bin/sh；桥接命令以原始 argv 解析，代码经 stdin 传递，不把代码／文件名拼进 shell 求值。
 
+## Rust latency profile / Rust 低延迟配置
+
+`helix_rust_syntax:"fast"` is the default. Session-local empty Rust locals/injections queries retain upstream base syntax highlighting, grammar, indentation, textobjects and LSP, while simplifying local-reference semantic colors and nested macro/format/comment/embedded-language highlighting (nested macro selection can be coarser). No global config/runtime rewrite. Choose `"full"` in duet.json and restart for all upstream processing. Other languages are unchanged. Measured on a copy of src/ui.rs at 210×49: release ~71→10 ms, debug ~97→11 ms local glyph feedback; not a network latency guarantee. See [measurements and reproduction](performance.md).
+
+默认 `helix_rust_syntax:"fast"` 仅在私有配置精简Rust局部变量查询及嵌套语法注入；保留基础语法高亮／原始grammar／缩进／textobjects／LSP，但局部引用语义色彩、宏／format占位符／注释与内嵌语言的专门高亮会简化，宏内嵌套选择可能更粗。全局配置／配套runtime不改，其他语言不变；duet.json设 `"helix_rust_syntax":"full"`，保存各缓冲区后退出重开可恢复完整处理，不会热替换旧编辑器。调试构建现也启用opt-level=1，保留符号／断言，正式使用仍建议release。
+
 ## Focus / 焦点
 
 - Tab from sidebar → real Helix; Ctrl+] → workbench, without saving/closing.

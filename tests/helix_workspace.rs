@@ -11,6 +11,43 @@ use std::{
     path::Path,
     process::{Command, Stdio},
 };
+#[test]
+fn rust_fast_overlays_are_private_and_full_restores_upstream() {
+    use duet_workbench::config::HelixRustSyntax;
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path()).unwrap();
+    let mut w = Workspace::new(dir.path(), &store, false).unwrap();
+    assert_eq!(w.rust_syntax, HelixRustSyntax::Fast);
+    let q = w.config_home().join("helix/runtime/queries/rust");
+    for name in ["locals.scm", "injections.scm"] {
+        let text = std::fs::read_to_string(q.join(name)).unwrap();
+        assert!(text.starts_with(";"));
+        assert!(!text.contains("@"));
+    }
+    for name in ["highlights.scm", "indents.scm", "textobjects.scm"] {
+        assert!(!q.join(name).exists());
+    }
+    w.light = true;
+    w.refresh_config().unwrap();
+    assert!(q.join("locals.scm").exists());
+    w.rust_syntax = HelixRustSyntax::Full;
+    w.refresh_config().unwrap();
+    assert!(!q.join("locals.scm").exists());
+    assert!(!q.join("injections.scm").exists());
+    assert!(
+        std::fs::read_to_string(w.config_file())
+            .unwrap()
+            .contains("C-g")
+    );
+    let full =
+        Workspace::new_with_syntax(dir.path(), &store, false, HelixRustSyntax::Full).unwrap();
+    assert!(
+        !full
+            .config_home()
+            .join("helix/runtime/queries/rust/locals.scm")
+            .exists()
+    );
+}
 fn fixture() -> (tempfile::TempDir, WorkspaceStore, Workspace, App) {
     let dir = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(dir.path()).unwrap();

@@ -79,6 +79,8 @@ File switches now execute an internal F12 binding once, not typed :open sequence
 
 See [Helix setup/safety](docs/helix.md), [review discussion/publication](docs/review-editor.md), and [project tree](docs/project-tree.md).
 
+Rust editing now defaults to a private fast syntax profile: base syntax/grammar/LSP remain, while locals and nested-language coloring are simplified. Set `helix_rust_syntax:"full"` in duet.json and restart to restore upstream processing. Same-file 210×49 local benchmarks improved release ~71→10 ms and debug ~97→11 ms; SSH latency is separate. See [performance](docs/performance.md).
+
 ## The workflow
 
 ```text

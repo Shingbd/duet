@@ -23,3 +23,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Keep debug symbols/assertions while avoiding unoptimized terminal-cell hot paths.
+[profile.dev]
+opt-level = 1

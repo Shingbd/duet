@@ -112,7 +112,12 @@ pub fn start(
         .canonicalize()?;
     let root = store.directory().parent().context("缺少项目根目录")?;
     let project_repo = Repository::open(root).ok();
-    let mut workspace = crate::helix_workspace::Workspace::new(root, store, app.light)?;
+    let mut workspace = crate::helix_workspace::Workspace::new_with_syntax(
+        root,
+        store,
+        app.light,
+        app.config.helix_rust_syntax,
+    )?;
     let startup = matches!(&selection, Selection::Startup);
     let (target, cwd, path) = match selection {
         Selection::Startup => {

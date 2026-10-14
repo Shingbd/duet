@@ -65,6 +65,7 @@ pub struct Workspace {
     pub active: Option<PathBuf>,
     pub pending: Option<Instant>,
     pub light: bool,
+    pub rust_syntax: crate::config::HelixRustSyntax,
     pub confirm: Option<Proposal>,
     pub applying: bool,
     pub unobserved: std::collections::HashSet<PathBuf>,
@@ -90,6 +91,14 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 impl Workspace {
     pub fn new(root: &Path, store: &crate::storage::WorkspaceStore, light: bool) -> Result<Self> {
+        Self::new_with_syntax(root, store, light, Default::default())
+    }
+    pub fn new_with_syntax(
+        root: &Path,
+        store: &crate::storage::WorkspaceStore,
+        light: bool,
+        rust_syntax: crate::config::HelixRustSyntax,
+    ) -> Result<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let directory = store
             .directory()
@@ -105,6 +114,7 @@ impl Workspace {
             active: None,
             pending: None,
             light,
+            rust_syntax,
             confirm: None,
             applying: false,
             unobserved: Default::default(),
@@ -150,6 +160,25 @@ impl Workspace {
     fn write_config(&mut self) -> Result<()> {
         let dir = self.config_home().join("helix");
         conflict::private_dir(&dir.join("themes"))?;
+        // Session-local query overlays, never edit hx runtime or user configuration.
+        // Rust base highlights, grammar, indentation/textobjects and LSP stay upstream.
+        let queries = dir.join("runtime/queries/rust");
+        conflict::private_dir(&queries)?;
+        for name in ["locals.scm", "injections.scm"] {
+            let file = queries.join(name);
+            if self.rust_syntax == crate::config::HelixRustSyntax::Fast {
+                fs::write(
+                    file,
+                    "; Duet fast Rust: retain upstream base syntax; omit locals/injections.\n",
+                )?;
+            } else {
+                match fs::remove_file(file) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
         for light in [false, true] {
             fs::write(
                 dir.join("themes").join(if light {

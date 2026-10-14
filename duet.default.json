@@ -8,6 +8,7 @@
   "helix_path": "hx",
   "helix_keepalive": true,
   "helix_startup": true,
+  "helix_rust_syntax": "fast",
   "review_editor": "helix",
   "agent": {
     "pi_path": "pi",

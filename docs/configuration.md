@@ -57,6 +57,7 @@ Project configuration is ordinary source data and can be committed. If creating/
 | `keymap_file` | `null` | Optional keymap JSON; default bindings otherwise / 快捷键文件，空值使用默认 |
 | `editor` | `"vi"` | Single executable path, used only after confirmed editing; `DUET_EDITOR` overrides / 单个编辑器路径，确认后启动，环境变量优先 |
 | `helix_path` | `"hx"` | Embedded Helix executable; `--helix` overrides / 框内 Helix 可执行路径，--helix 覆盖 |
+| `helix_rust_syntax` | `"fast"` | Rust base grammar/highlighting/LSP retained; omit locals analysis and nested language injections for low latency. `"full"` restores upstream; restart required. / 快速模式简化局部变量语义分类及宏／注释／内嵌语言着色，完整模式可恢复，不改全局 |
 | `helix_startup` | `true` | Preload fresh Helix on open, sidebar focus, no models or old process recovery; native review / active CLI coding skip preloading / 启动预载，可关闭 |
 | `helix_keepalive` | `true` | Reopen a successfully exited workspace editor; explicit stop and crashes do not restart / 普通成功退出后重建，明确停止／崩溃不重启 |
 | `review_editor` | `"helix"` | Real Helix default; explicit `"native"` legacy backend / 默认真实 Helix，native 明确选择旧原生后端 |

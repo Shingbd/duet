@@ -15,6 +15,14 @@ pub enum ReviewEditor {
     Helix,
     Native,
 }
+/// Fast retains Rust parsing/base highlighting/LSP, omitting locals and nested injections.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum HelixRustSyntax {
+    #[default]
+    Fast,
+    Full,
+}
 pub const DEFAULT_JSON: &str = include_str!("../duet.default.json");
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum Language {
@@ -98,6 +106,7 @@ pub struct Config {
     pub helix_path: PathBuf,
     pub helix_keepalive: bool,
     pub helix_startup: bool,
+    pub helix_rust_syntax: HelixRustSyntax,
     pub review_editor: ReviewEditor,
     pub agent: AgentConfig,
     pub performance: Performance,
@@ -114,6 +123,7 @@ impl Default for Config {
             helix_path: "hx".into(),
             helix_keepalive: true,
             helix_startup: true,
+            helix_rust_syntax: HelixRustSyntax::Fast,
             review_editor: ReviewEditor::Helix,
             agent: AgentConfig::default(),
             performance: Performance::default(),

@@ -1,3 +1,11 @@
+#[test]
+fn rust_syntax_preference_is_strict_and_defaults_fast() {
+    use duet_workbench::config::{Config, HelixRustSyntax};
+    assert_eq!(Config::default().helix_rust_syntax, HelixRustSyntax::Fast);
+    let config: Config = serde_json::from_str(r#"{"helix_rust_syntax":"full"}"#).unwrap();
+    assert_eq!(config.helix_rust_syntax, HelixRustSyntax::Full);
+    assert!(serde_json::from_str::<Config>(r#"{"helix_rust_syntax":"off"}"#).is_err());
+}
 use duet_workbench::{
     app::{App, View},
     config::{Config, DEFAULT_JSON, DefaultView, Language, Theme},
