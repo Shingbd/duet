@@ -113,7 +113,18 @@ pub fn start(
     let root = store.directory().parent().context("缺少项目根目录")?;
     let project_repo = Repository::open(root).ok();
     let mut workspace = crate::helix_workspace::Workspace::new(root, store, app.light)?;
+    let startup = matches!(&selection, Selection::Startup);
     let (target, cwd, path) = match selection {
+        Selection::Startup => {
+            let file = workspace.welcome()?;
+            (
+                Target::Workspace {
+                    directory: workspace.directory.clone(),
+                },
+                workspace.directory.clone(),
+                file,
+            )
+        }
         Selection::ReviewBuffer => {
             let b = app.current_buffer().context("无审核缓冲区")?;
             let file = workspace.review(b, project_repo.as_ref().context("审核需要 Git")?)?;
@@ -246,7 +257,7 @@ pub fn start(
     app.mode = Mode::Browse;
     app.panel = crate::app::Panel::Reader;
     app.editor_focused = true;
-    app.editor_project = matches!(target, Target::Project { .. });
+    app.editor_project = matches!(target, Target::Project { .. }) || startup;
     app.editor_conflict = matches!(target, Target::Integration { .. });
     app.status = if app.config.helix_keepalive && !app.editor_conflict {
         "Helix 常驻代码框 · Ctrl+] 侧栏 · Space q 保存返回 · :editor-stop 明确停止".into()
@@ -260,6 +271,41 @@ pub fn start(
         cwd,
         executable,
     })
+}
+/// Fresh editor startup, never restoration of the old process/unsaved buffers or execution.
+pub fn startup(app: &mut App, store: &WorkspaceStore, rows: u16, cols: u16) -> Result<Session> {
+    let view = app.view;
+    let root = store.directory().parent().context("缺少项目根目录")?;
+    let selection = if view == View::Review && app.current_buffer().is_some() {
+        Selection::ReviewBuffer
+    } else {
+        let selected = app.project_tree.selected.clone();
+        let path = std::iter::once(selected)
+            .chain(
+                app.project_tree
+                    .entries
+                    .iter()
+                    .filter(|e| !e.directory && e.status != 'D')
+                    .take(32)
+                    .map(|e| e.path.clone()),
+            )
+            .find(|p| safe_file(root, p).is_ok());
+        if let Some(path) = path {
+            app.project_tree.reveal(&path);
+            app.view = View::Project;
+            Selection::ProjectFile { path }
+        } else {
+            Selection::Startup
+        }
+    };
+    let result = start(selection, app, store, rows, cols);
+    app.view = view;
+    app.panel = crate::app::Panel::Queue;
+    app.editor_focused = false;
+    if result.is_ok() {
+        app.status = "Helix 已预载 · Tab 进入 · 切文件复用进程 · :editor-stop 明确停止".into();
+    }
+    result
 }
 pub fn reopen(session: &mut Session, app: &mut App, rows: u16, cols: u16) -> Result<()> {
     let file = session
@@ -374,7 +420,9 @@ pub fn poll_bridge(session: &mut Session, app: &mut App) -> Result<bool> {
             .strip_prefix(&session.workspace.manifest.root)?
             .to_str()
             .context("非 UTF-8 路径")?;
-        app.project_tree.reveal(path);
+        if !binding.file.starts_with(&session.workspace.directory) {
+            app.project_tree.reveal(path);
+        }
         session.workspace.active = Some(binding.file);
         app.editor_focused = false;
         app.panel = crate::app::Panel::Queue;

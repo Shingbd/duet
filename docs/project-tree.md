@@ -2,13 +2,13 @@
 
 Project (`3`) now has a hierarchical file tree, separate from Review's task/node changed-file list. **Pressing 3 explicitly opens the current project file in embedded Helix without h or an extra editor confirmation.** Opening/restarting Duet only restores navigation preferences; it never revives or automatically starts an editor/model.
 
-`3` 项目视图使用目录文件树；`2` 审核仍按任务/节点显示变更文件。**主动按 3 会直接在代码框中打开项目文件的 Helix，无需 h 或额外启动确认。** 打开/重启 Duet 只恢复导航偏好，不自动启动或恢复编辑器/模型。
+`3` 项目视图使用目录文件树；`2` 审核仍按任务/节点显示变更文件。**主动按 3 会直接在代码框中打开项目文件的 Helix，无需 h 或额外启动确认。** 现在打开／重启 Duet 默认预载新的 Helix，保留导航／侧栏焦点，第一文件入口复用 PID；空项目预载私有欢迎页。helix_startup:false 或明确 native 可关闭预载；不恢复旧进程／未保存编辑状态，不启动模型。明确停止后不会自动再次预载。
 
 Default `hx` resolution prefers PATH, then checks only bundled tools relative to the running Duet executable: `helix/hx` beside it or `../tools/helix-25.07.1-x86_64-linux/hx` (the local debug/release development bundle). No downloads or opened-project tool discovery occur. Explicit custom paths/names are not silently replaced. Otherwise install `hx` with its runtime or configure `helix_path` / `--helix /path/to/hx`.
 
-默认 `hx` 先查 PATH，再仅查运行中的 Duet 程序旁的配套工具：同目录 `helix/hx`，或 `../tools/helix-25.07.1-x86_64-linux/hx`（本机 debug/release 开发包）。不下载、不从打开的项目搜工具；明确自定义路径/名称不会静默替换。 If missing, Duet shows an actionable error and retains the tree. Helix is a real Unix PTY process, not the native review editor. It can invoke shell/LSP/configured tools with account permissions: this is **not an OS sandbox**. The user's project-entry/open-file action authorizes this editor launch; it does not authorize any AI call, commit, merge or deployment.
+默认 `hx` 先查 PATH，再仅查运行中的 Duet 程序旁的配套工具：同目录 `helix/hx`，或 `../tools/helix-25.07.1-x86_64-linux/hx`（本机 debug/release 开发包）。不下载、不从打开的项目搜工具；明确自定义路径/名称不会静默替换。 If missing, Duet shows an actionable error and retains the tree. Helix is a real Unix PTY process, not the native review editor. It can invoke shell/LSP/configured tools with account permissions: this is **not an OS sandbox**. Startup preloading is a configured editor preference explicitly requested by the user; it does not authorize any AI call, commit, merge or deployment.
 
-安装包含 runtime 的 `hx`，或配置 `helix_path` / `--helix /path/to/hx`；缺失时说明错误，文件树仍保留。这里是真正 Unix PTY Helix，不是原生审核编辑器。Helix 可以账号权限调用 shell/LSP/配置工具，**不是 OS 沙箱**；用户按项目入口/打开文件即授权编辑器启动，不授权 AI、提交、合入或部署。
+安装包含 runtime 的 `hx`，或配置 `helix_path` / `--helix /path/to/hx`；缺失时说明错误，文件树仍保留。这里是真正 Unix PTY Helix，不是原生审核编辑器。Helix 可以账号权限调用 shell/LSP/配置工具，**不是 OS 沙箱**；用户明确要求的启动预载是编辑器偏好（可关闭），不授权 AI、提交、合入或部署。
 
 ## Navigation / 操作
 

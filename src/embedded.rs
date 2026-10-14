@@ -9,6 +9,7 @@ use std::{
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
+    Startup,
     ReviewBuffer,
     ProjectFile {
         path: String,
@@ -30,6 +31,7 @@ pub enum Selection {
 impl Selection {
     pub fn path(&self) -> &str {
         match self {
+            Self::Startup => "启动页",
             Self::ReviewBuffer => "审核草稿",
             Self::ProjectFile { path } | Self::Project { path, .. } | Self::Review { path, .. } => {
                 path

@@ -352,6 +352,26 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     {
         app.status = format!("文件树不可用：{error}");
     }
+    if config.helix_startup && app.helix_review && coding.as_ref().is_none_or(|c| c.is_finished()) {
+        if let Some(repo) = &review_repo {
+            let _ = duet_workbench::review_workflow::prepare(&mut app, repo);
+        }
+        let size = terminal.size()?;
+        let (rows, cols) = ui::editor_size_for(
+            &app,
+            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+        );
+        match duet_workbench::editing::startup(&mut app, &store, rows, cols) {
+            Ok(s) => {
+                app.editor_screen = Some(s.terminal.screen().clone());
+                editor = Some(s);
+            }
+            Err(e) => {
+                app.status = format!("Helix 启动失败（不重试）：{e}");
+                app.editor_focused = false;
+            }
+        }
+    }
     loop {
         if review_runtime.poll(&mut app, &mut store)? {
             redraw = true;
@@ -677,7 +697,8 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             if !matches!(
                                 s.target,
                                 duet_workbench::editing::Target::Integration { .. }
-                            ) {
+                            ) && !s.workspace.manifest.bindings.is_empty()
+                            {
                                 s.workspace.begin(&mut s.terminal, 0x11)?;
                             }
                             changed = true;

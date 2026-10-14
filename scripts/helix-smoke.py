@@ -7,7 +7,7 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
  for args in [('init','-q'),('add','.'),('-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','base')]:
   subprocess.run(['git','-C',str(project),*args],check=True)
  original=subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD'])
- cfg=base/'config.json';cfg.write_text(json.dumps({'helix_path':str(helix),'helix_keepalive':False}))
+ cfg=base/'config.json';cfg.write_text(json.dumps({'helix_path':str(helix),'helix_keepalive':False,'helix_startup':False}))
  master,slave=pty.openpty();before=termios.tcgetattr(slave);fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
  process=subprocess.Popen([str(binary),'--config',str(cfg),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':'xterm-256color','XDG_CONFIG_HOME':str(base/'global')})
  output=bytearray()

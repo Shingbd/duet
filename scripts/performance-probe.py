@@ -31,7 +31,7 @@ def probe(binary):
                            stdout=subprocess.DEVNULL)
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
-        process = subprocess.Popen([str(binary), "open", directory], stdin=slave,
+        process = subprocess.Popen([str(binary), "--review-editor", "native", "open", directory], stdin=slave,
                                    stdout=slave, stderr=slave,
                                    env={**os.environ, "TERM": "xterm-256color"})
 

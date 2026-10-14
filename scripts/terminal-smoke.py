@@ -23,7 +23,7 @@ before = termios.tcgetattr(slave)
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
 project = tempfile.TemporaryDirectory(prefix="duet-pty-")
 process = subprocess.Popen(
-    [str(binary), "open", project.name], stdin=slave, stdout=slave, stderr=slave,
+    [str(binary), "--review-editor", "native", "open", project.name], stdin=slave, stdout=slave, stderr=slave,
     env={**os.environ, "TERM": "xterm-256color"}, cwd=root,
 )
 output = bytearray()

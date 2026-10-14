@@ -113,6 +113,19 @@ impl Workspace {
         w.write_config()?;
         Ok(w)
     }
+    pub fn welcome(&mut self) -> Result<PathBuf> {
+        let file = self.directory.join("welcome.txt");
+        fs::write(
+            &file,
+            "Duet · Helix 已就绪\n在侧栏选择文件；Tab 进入编辑器。\n此启动页位于私有目录，不是项目文件，不可发送给 AI。\n",
+        )?;
+        self.manifest.bindings.push(Binding {
+            file: file.clone(),
+            identity: None,
+        });
+        self.save_manifest()?;
+        Ok(file)
+    }
     fn save_manifest(&self) -> Result<()> {
         json(&self.directory.join("manifest.json"), &self.manifest)
     }

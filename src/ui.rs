@@ -378,6 +378,7 @@ format!(
     match &app.mode {
         Mode::ConfirmEmbeddedEditor { selection } => {
             let target = match selection {
+                crate::embedded::Selection::Startup => "私有启动页，不编辑项目文件",
                 crate::embedded::Selection::ReviewBuffer => "独立审核草稿",
                 crate::embedded::Selection::ProjectFile { .. }
                 | crate::embedded::Selection::Project { .. } => {
