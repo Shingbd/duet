@@ -765,7 +765,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             .mark_input(app.view == duet_workbench::app::View::Project);
                         app.helix_unknown =
                             !editor.as_ref().unwrap().workspace.unobserved.is_empty();
-                        if let Some(delta) = duet_workbench::embedded::file_navigation(key) {
+                        if let Some(delta) = duet_workbench::embedded::node_navigation(key) {
+                            app.navigate_editor_node(delta);
+                            changed = true;
+                        } else if let Some(delta) = duet_workbench::embedded::file_navigation(key) {
                             app.navigate_editor_file(delta);
                             changed = true;
                         } else if key.code == crossterm::event::KeyCode::F(6) {

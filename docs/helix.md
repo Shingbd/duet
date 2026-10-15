@@ -26,6 +26,12 @@ The fixed acceptance/evidence sidebar is temporarily hidden; contextual AI chat 
 
 默认 `helix_rust_syntax:"fast"` 仅在私有配置精简Rust局部变量查询及嵌套语法注入；保留基础语法高亮／原始grammar／缩进／textobjects／LSP，但局部引用语义色彩、宏／format占位符／注释与内嵌语言的专门高亮会简化，宏内嵌套选择可能更粗。全局配置／配套runtime不改，其他语言不变；duet.json设 `"helix_rust_syntax":"full"`，保存各缓冲区后退出重开可恢复完整处理，不会热替换旧编辑器。调试构建现也启用opt-level=1，保留符号／断言，正式使用仍建议release。
 
+## Review node navigation / 审核节点切换
+
+**Ctrl+Shift+[ / Ctrl+Shift+]** (or **Ctrl+Shift+PageUp/PageDown**) switches previous/next review node within the current task, wrapping, retaining focus/fullscreen and the same editor/buffers. Targets need loaded immutable snapshots with nondeleted changed files; selects the target's first file. No automatic execution, write, publication, approval, verification, integration or task change. Shifted bracket and brace encodings are supported; unmodified brackets remain native. Terminal support is required to distinguish Ctrl/Shift/Esc; [client mapping and fallback keys](terminal-keys.md) explain the limitation and provide explicit CSI-u / VS Code mappings. A host setting cannot repair modifiers lost by a legacy terminal.
+
+审核焦点内 Ctrl+Shift+[／] 上一／下一节点（替代 Ctrl+Shift+PageUp/Down），限当前任务已有可编辑交付快照，首尾循环并选目标第一个文件，不执行未实施节点。保留进程／焦点／全屏／未保存缓冲区与撤销。旧终端丢失Ctrl/Shift时须使用替代键或[客户端映射](terminal-keys.md)，不能拦截Esc猜测左括号。
+
 ## Direct file navigation / 编辑区直接切文件
 
 - **Ctrl+] next / Ctrl+[ previous**: host-managed file order, Project skips directories/deleted entries in the visible tree; Review stays within the selected node's changed files. Wraps at both ends; status shows file position/path. A single-file list explicitly reports that there is no other file. Same Helix PID, no automatic write/publication/approval, other unsaved buffers/undo remain. Insert-mode navigation finishes insertion and opens the target in normal mode.

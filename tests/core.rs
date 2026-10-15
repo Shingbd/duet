@@ -290,6 +290,23 @@ fn file_navigation_disambiguates_escape_and_keeps_editor_fullscreen() {
         file_navigation(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         None
     );
+    for code in [KeyCode::Char('['), KeyCode::Char('{'), KeyCode::PageUp] {
+        let k = KeyEvent::new(code, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(duet_workbench::embedded::node_navigation(k), Some(-1));
+        assert_eq!(file_navigation(k), None);
+    }
+    for code in [KeyCode::Char(']'), KeyCode::Char('}'), KeyCode::PageDown] {
+        let k = KeyEvent::new(code, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(duet_workbench::embedded::node_navigation(k), Some(1));
+        assert_eq!(file_navigation(k), None);
+    }
+    assert_eq!(
+        duet_workbench::embedded::node_navigation(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )),
+        None
+    );
     let mut app = fixture_app();
     app.view = View::Project;
     app.fullscreen = true;

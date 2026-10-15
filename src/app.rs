@@ -2059,6 +2059,61 @@ impl App {
     fn move_item(&mut self, delta: isize) {
         self.move_in(self.visible_file_indices(), delta);
     }
+    /// Navigate immutable review deliveries inside the current task, not execution.
+    pub fn navigate_editor_node(&mut self, delta: isize) {
+        if self.view != View::Review || self.editor_conflict {
+            self.status = "节点切换仅用于审核中的交付快照".into();
+            return;
+        }
+        let Some(task) = self.selected_task() else {
+            self.status = "未选择审核任务".into();
+            return;
+        };
+        let nodes: Vec<String> = task
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.review_snapshot().is_some_and(|cp| {
+                    self.items.iter().any(|i| {
+                        i.version == cp
+                            && i.change.is_some()
+                            && i.change != Some(crate::checkpoint::ChangeKind::Deleted)
+                    })
+                })
+            })
+            .map(|n| n.contract.id.clone())
+            .collect();
+        if nodes.len() < 2 {
+            self.status = "当前任务没有其他可编辑交付节点；未启动实现／切换任务".into();
+            return;
+        }
+        let current = self
+            .task_selection
+            .as_ref()
+            .and_then(|s| s.node_id.as_ref());
+        let index = nodes
+            .iter()
+            .position(|id| Some(id) == current)
+            .map_or(if delta > 0 { 0 } else { nodes.len() - 1 }, |i| {
+                (i as isize + delta.signum()).rem_euclid(nodes.len() as isize) as usize
+            });
+        let task_id = task.id.clone();
+        let node = nodes[index].clone();
+        self.select_task_entry(TaskSelection {
+            task_id,
+            node_id: Some(node.clone()),
+        });
+        self.review_compare = false;
+        self.panel = Panel::Reader;
+        self.requested_review_helix = true;
+        self.requested_fullscreen_focus = true;
+        self.status = format!(
+            "切换节点 {}/{} · {} · 未自动保存／发布",
+            index + 1,
+            nodes.len(),
+            node
+        );
+    }
     pub fn navigate_editor_file(&mut self, delta: isize) {
         if self.editor_conflict {
             self.status = "冲突编辑器保持当前文件；F6 返回工作台选择其他冲突".into();

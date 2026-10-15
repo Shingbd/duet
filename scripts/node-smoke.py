@@ -110,6 +110,31 @@ for line in sys.stdin:
         send(b'q')
         assert process.wait(timeout=3)==0
         assert termios.tcgetattr(slave)==before
+        if len(sys.argv)>2:
+            cfg=base/'helix-nav.json';cfg.write_text(json.dumps({'helix_startup':False,'helix_keepalive':False}))
+            process=subprocess.Popen([str(binary),'--config',str(cfg),'--helix',str(pathlib.Path(sys.argv[2]).resolve()),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
+            drain(.6);send(b'f');drain(1)
+            def selected_node():
+                with sqlite3.connect(database) as db:return json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])['task_selection']['node_id']
+            def editor_children():return pathlib.Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().strip()
+            editor_pid=editor_children();assert editor_pid
+            send(b'iNODE_TWO_DRAFT');send(b'\x1b')
+            send(b'\x1b[93;6u');wait(lambda:selected_node()=='n3');drain(.4)
+            send(b'iNODE_THREE_DRAFT');send(b'\x1b')
+            send(b'\x1b[123;5u');wait(lambda:selected_node()=='n2');drain(.3)
+            send(b'iRETURNED_TWO');send(b'\x1b')
+            for key,node in [(b'\x1b[6;6~','n3'),(b'\x1b[6;6~','n1'),(b'\x1b[5;6~','n3'),(b'\x1b[91;6u','n2')]:
+                send(key);wait(lambda:selected_node()==node);drain(.3)
+            assert editor_children()==editor_pid,'node switch restarted Helix'
+            send(b':wqa\r');drain(1);wait(lambda:not editor_children())
+            manifests=list((project/'.duet/helix-workspaces').glob('*/manifest.json'));assert len(manifests)==1
+            bindings=json.loads(manifests[0].read_text())['bindings']
+            bodies={b['identity']['node']:pathlib.Path(b['file']).read_text() for b in bindings if b['identity'].get('node')}
+            assert 'NODE_TWO_DRAFT' in bodies['n2'] and 'RETURNED_TWO' in bodies['n2'],bodies
+            assert 'NODE_THREE_DRAFT' in bodies['n3'],bodies
+            assert not any((project/f'file{i}.txt').exists() for i in range(1,4)),'main files changed'
+            assert [n['review'] for n in records()[0]]==['Approved','Pending','Pending']
+            send(b'q');assert process.wait(timeout=3)==0;assert termios.tcgetattr(slave)==before
         print('PTY nodes passed: readonly plan, staged delivery, explicit approval, real backpressure, pinned review, restart, node switch')
     finally:
         if process.poll() is None: process.kill();process.wait()
