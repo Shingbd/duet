@@ -104,7 +104,12 @@ for line in sys.stdin:
         send(b'\t');send(b'\x13');wait(lambda:len(records()[1]['attempts'])==2)
         assert records()[1]['review']=='Pending' and records()[1]['attempts'][-1]['checkpoint']!=old_cp
         assert snapshot_text().startswith('better_design')
-        send(b'\t');start=len(output);send(b'\x04');drain(.5);assert b'old baseline' in output[start:],'deleted baseline comparison missing';send(b'j');send(b'k');send(b'\x04');send(b'\x1d');drain(.3)
+        send(b'\t');start=len(output);send(b'\x04');drain(.5);assert b'old baseline' in output[start:],'deleted baseline comparison missing';send(b'j');send(b'k');send(b'\x04');drain(.3)
+        # Second Ctrl+D must return actual editor ownership, not leave a read-only host.
+        send(b'iCOMPARE_EXIT_PROBE');send(b'\x1b');send(b'\x19');drain(.5)
+        wait(lambda:any('COMPARE_EXIT_PROBE' in b['text'] for b in workspace()[0]))
+        send(b'\t');send(b'u');send(b'\x19');drain(.5);wait(lambda:not any('COMPARE_EXIT_PROBE' in b['text'] for b in workspace()[0]))
+        send(b'\x1d');drain(.3)
         task,node,_=records();candidate=project/'.duet/worktrees'/task['id']/'main.txt'
         assert candidate.read_text()=='second change\nnew growth'
         # Project/review share the same real process; j/k selects without Enter.

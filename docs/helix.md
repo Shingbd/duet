@@ -16,6 +16,10 @@ Duet creates private per-session configuration under `.duet/helix-workspaces/<no
 
 每次会话在私有目录生成配套配置／缓存，主题与 Duet 同步，关闭自动格式化，不改写或导入全局 Helix 配置。除桥接键及内部保留 A-p 外，普通按键沿用 Helix。人工明确输入的 shell 命令仍可调用 /bin/sh；桥接命令以原始 argv 解析，代码经 stdin 传递，不把代码／文件名拼进 shell 求值。
 
+右侧固定验收／证据栏已暂时隐藏，代码区获得其空间，Tab只切文件树／主区域；就地AI讨论侧栏仍保留。Ctrl+D进入只读对比，再按Ctrl+D可退出并恢复真实Helix焦点，不需要先退出整个编辑器。条件／证据／固定批准数据不删除。
+
+The fixed acceptance/evidence sidebar is temporarily hidden; contextual AI chat still has its pane. Ctrl+D again exits comparison and restores real editor ownership. Evidence/approvals are retained, and hidden panels cannot receive Tab focus.
+
 ## Rust latency profile / Rust 低延迟配置
 
 `helix_rust_syntax:"fast"` is the default. Session-local empty Rust locals/injections queries retain upstream base syntax highlighting, grammar, indentation, textobjects and LSP, while simplifying local-reference semantic colors and nested macro/format/comment/embedded-language highlighting (nested macro selection can be coarser). No global config/runtime rewrite. Choose `"full"` in duet.json and restart for all upstream processing. Other languages are unchanged. Measured on a copy of src/ui.rs at 210×49: release ~71→10 ms, debug ~97→11 ms local glyph feedback; not a network latency guarantee. See [measurements and reproduction](performance.md).

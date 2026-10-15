@@ -208,6 +208,9 @@ pub struct App {
     pub cancel_requested: bool,
     pub history: Vec<Message>,
     pub task_scroll: u16,
+    /// None follows the conversation tail; Some anchors an absolute wrapped line.
+    pub conversation_top: Option<usize>,
+    pub conversation_max: usize,
     pub task_evidence_scroll: u16,
     pub queued_corrections: usize,
     pub controls: Vec<RunControl>,
@@ -394,6 +397,8 @@ impl App {
             cancel_requested: false,
             history: Vec::new(),
             task_scroll: 0,
+            conversation_top: None,
+            conversation_max: 0,
             task_evidence_scroll: 0,
             queued_corrections: 0,
             controls: Vec::new(),
@@ -723,7 +728,32 @@ impl App {
         }
         rows
     }
+    /// Only contextual AI chat uses a right pane; fixed acceptance/evidence is hidden.
+    pub fn has_evidence_panel(&self) -> bool {
+        self.view == View::Review && self.review_chat_open
+    }
+    pub fn showing_task_conversation(&self) -> bool {
+        self.view == View::Tasks
+            && self.selected_node().is_none()
+            && (self.selected_task().is_some()
+                || self.task.is_some()
+                || !self.history.is_empty()
+                || !self.run.text.is_empty())
+    }
+    fn scroll_conversation(&mut self, delta: isize) {
+        let current = self.conversation_top.unwrap_or(self.conversation_max);
+        let next = current
+            .saturating_add_signed(delta)
+            .min(self.conversation_max);
+        if delta > 0 && next == self.conversation_max {
+            self.conversation_top = None;
+        } else if next != current || self.conversation_top.is_some() {
+            self.conversation_top = Some(next);
+        }
+    }
     pub fn select_task_entry(&mut self, selection: TaskSelection) {
+        self.conversation_top = None;
+        self.conversation_max = 0;
         self.task_selection = Some(selection);
         self.review_version = if let Some(node) = self.selected_node() {
             node.review_snapshot().map(str::to_owned)
@@ -1124,6 +1154,21 @@ impl App {
         }
     }
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.helix_review
+            && self.view == View::Review
+            && self.review_compare
+            && matches!(self.mode, Mode::Browse)
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('d')
+        {
+            self.review_compare = false;
+            self.panel = Panel::Reader;
+            self.editor_focused = self.editor_screen.is_some();
+            if !self.editor_focused {
+                self.requested_review_helix = true;
+            }
+            return;
+        }
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -1344,6 +1389,11 @@ impl App {
                             self.filter = value;
                             if self.view == View::Tasks || self.showing_node_contract() {
                                 self.task_scroll = 0;
+                                self.conversation_top = if self.filter.is_empty() {
+                                    None
+                                } else {
+                                    Some(0)
+                                };
                             }
                             if let Some(item) = self.items.get_mut(self.selected) {
                                 item.scroll = 0;
@@ -1630,6 +1680,27 @@ impl App {
             }
             return;
         }
+        if self.showing_task_conversation() && self.panel == Panel::Reader {
+            match key.code {
+                KeyCode::Home => {
+                    self.conversation_top = Some(0);
+                    return;
+                }
+                KeyCode::End => {
+                    self.conversation_top = None;
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.scroll_conversation(-15);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.scroll_conversation(15);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.view == View::Project
             && self.panel == Panel::Queue
             && !self.project_tree.entries.is_empty()
@@ -1684,7 +1755,10 @@ impl App {
 
     pub fn act(&mut self, action: Action) {
         match action {
-            Action::Tasks => self.view = View::Tasks,
+            Action::Tasks => {
+                self.view = View::Tasks;
+                self.conversation_top = None;
+            }
             Action::Review => {
                 self.open_review();
                 self.requested_review_helix = true;
@@ -1709,14 +1783,24 @@ impl App {
             Action::Knowledge => self.view = View::Knowledge,
             Action::NextPanel | Action::PreviousPanel => {
                 self.fullscreen = false;
-                self.panel = match (self.panel, action) {
-                    (Panel::Queue, Action::NextPanel)
-                    | (Panel::Evidence, Action::PreviousPanel) => Panel::Reader,
-                    (Panel::Reader, Action::NextPanel) | (Panel::Queue, Action::PreviousPanel) => {
-                        Panel::Evidence
+                self.panel = if !self.has_evidence_panel() {
+                    if self.panel == Panel::Reader {
+                        Panel::Queue
+                    } else {
+                        Panel::Reader
                     }
-                    _ => Panel::Queue,
+                } else {
+                    match (self.panel, action) {
+                        (Panel::Queue, Action::NextPanel)
+                        | (Panel::Evidence, Action::PreviousPanel) => Panel::Reader,
+                        (Panel::Reader, Action::NextPanel)
+                        | (Panel::Queue, Action::PreviousPanel) => Panel::Evidence,
+                        _ => Panel::Queue,
+                    }
                 };
+                if self.showing_task_conversation() && self.panel == Panel::Reader {
+                    self.conversation_top = None;
+                }
                 if self.view == View::Review && self.panel == Panel::Reader {
                     self.requested_review_helix = true;
                 }
@@ -1736,6 +1820,8 @@ impl App {
                     } else {
                         self.move_item(delta);
                     }
+                } else if self.showing_task_conversation() && self.panel == Panel::Reader {
+                    self.scroll_conversation(if action == Action::Up { -1 } else { 1 });
                 } else if self.view == View::Tasks
                     || (self.showing_node_contract() && self.panel == Panel::Reader)
                 {
@@ -1772,6 +1858,7 @@ impl App {
                 self.panel = Panel::Reader;
                 if self.view == View::Tasks {
                     self.task_scroll = 0;
+                    self.conversation_top = None;
                     return;
                 }
                 self.page = match self.page {

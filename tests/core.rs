@@ -272,6 +272,36 @@ fn lowercase_jk_navigate_and_uppercase_keys_remain_unbound() {
 }
 
 #[test]
+fn compare_exit_routes_to_existing_helix_and_hidden_evidence_is_not_focusable() {
+    let mut app = fixture_app();
+    app.view = View::Review;
+    app.helix_review = true;
+    app.review_compare = true;
+    app.panel = Panel::Reader;
+    app.editor_screen = Some(vt100::Parser::new(24, 80, 0).screen().clone());
+    app.editor_focused = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(!app.review_compare);
+    assert!(app.editor_focused);
+    assert_eq!(app.panel, Panel::Reader);
+    app.editor_focused = false;
+    app.panel = Panel::Queue;
+    app.act(Action::NextPanel);
+    assert_eq!(app.panel, Panel::Reader);
+    app.act(Action::NextPanel);
+    assert_eq!(app.panel, Panel::Queue);
+    app.review_chat_open = true;
+    app.panel = Panel::Reader;
+    app.act(Action::NextPanel);
+    assert_eq!(app.panel, Panel::Evidence);
+    let size = ui::editor_size_for(&app, ratatui::layout::Rect::new(0, 0, 130, 36));
+    app.review_chat_open = false;
+    assert_eq!(
+        ui::editor_size_for(&app, ratatui::layout::Rect::new(0, 0, 130, 36)).1,
+        size.1 + 32
+    );
+}
+#[test]
 fn fullscreen_review_requests_real_target_and_preserves_compare() {
     let mut app = fixture_app();
     app.view = View::Review;
@@ -302,7 +332,7 @@ fn fullscreen_navigation_cannot_target_a_hidden_panel() {
     assert_eq!(app.current().unwrap().scroll, 1);
     app.act(Action::NextPanel);
     assert!(!app.fullscreen);
-    assert_eq!(app.panel, Panel::Evidence);
+    assert_eq!(app.panel, Panel::Queue);
 }
 
 #[test]

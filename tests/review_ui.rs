@@ -148,17 +148,9 @@ mod display_regression {
             app.explain = true;
             app.page = Page::Code;
             terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
-            assert!(screen(&terminal).contains("ψExplanation"));
-            assert!(!screen(&terminal).contains("**ψExplanation**"));
-            assert!(screen(&terminal).contains("document only"));
-            let cell = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .find(|cell| cell.symbol() == "ψ")
-                .unwrap();
-            assert!(cell.modifier.contains(Modifier::BOLD));
+            assert!(!screen(&terminal).contains("ψExplanation"));
+            assert!(!screen(&terminal).contains("document only"));
+            assert!(app.current().unwrap().explanation.contains("ψExplanation")); // hidden, not deleted
             app.view = View::Knowledge;
             app.fullscreen = true;
             app.notes = vec![

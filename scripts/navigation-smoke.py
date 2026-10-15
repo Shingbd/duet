@@ -62,8 +62,8 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
         send(b"fj")
         assert state()[0]["panel"] == "Reader" and state()[1] == 1
         send(b"\t")
-        assert state()[0]["panel"] == "Evidence"
-        send(b"\t\tk")
+        assert state()[0]["panel"] == "Queue" # fixed evidence pane is hidden
+        send(b"\tk")
         assert state()[0]["panel"] == "Reader" and state()[1] == 0
         send(b":note jJkK\r")
         assert state()[0]["notes"][-1].endswith("jJkK")

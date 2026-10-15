@@ -151,7 +151,20 @@ impl Renderer {
     pub fn layout_builds(&self) -> usize {
         self.reader.builds
     }
+    /// Apply transient scroll bounds measured by the last draw; no model state is
+    /// mutated during painting and the cached conversation is not laid out twice.
+    pub fn sync_conversation_bounds(&self, app: &mut App) {
+        if app.showing_task_conversation()
+            && let Some(max) = self.reader.conversation_max
+        {
+            app.conversation_max = max;
+            if let Some(top) = &mut app.conversation_top {
+                *top = (*top).min(max);
+            }
+        }
+    }
     pub fn draw(&mut self, frame: &mut Frame, app: &App) {
+        self.reader.conversation_max = None;
         draw_cached(frame, app, &mut self.reader, &mut self.evidence);
     }
 }
@@ -269,6 +282,10 @@ fn draw_cached(
     let body = rows[2];
     if app.fullscreen {
         reader(frame, app, body, theme, cache);
+    } else if body.width >= 116 && !app.has_evidence_panel() {
+        let cols = Layout::horizontal([Constraint::Length(28), Constraint::Min(36)]).split(body);
+        queue(frame, app, cols[0], theme);
+        reader(frame, app, cols[1], theme, cache);
     } else if body.width >= 116 {
         let cols = Layout::horizontal([
             Constraint::Length(28),
@@ -282,7 +299,7 @@ fn draw_cached(
     } else if body.width >= 78 {
         let cols = Layout::horizontal([Constraint::Length(25), Constraint::Min(30)]).split(body);
         queue(frame, app, cols[0], theme);
-        if app.panel == Panel::Evidence {
+        if app.panel == Panel::Evidence && app.has_evidence_panel() {
             evidence(frame, app, cols[1], theme, evidence_cache);
         } else {
             reader(frame, app, cols[1], theme, cache);
@@ -291,7 +308,10 @@ fn draw_cached(
         match app.panel {
             Panel::Queue => queue(frame, app, body, theme),
             Panel::Reader => reader(frame, app, body, theme, cache),
-            Panel::Evidence => evidence(frame, app, body, theme, evidence_cache),
+            Panel::Evidence if app.has_evidence_panel() => {
+                evidence(frame, app, body, theme, evidence_cache)
+            }
+            Panel::Evidence => reader(frame, app, body, theme, cache),
         }
     }
     // Keep the existing status entry, including failure details even when the
@@ -335,13 +355,13 @@ fn draw_cached(
             Line::from(Span::styled(
                 if app.editor_focused {
                     if app.fullscreen {app.tr(" Helix 全屏 · Ctrl+] 退出全屏/回侧栏 · :w 保存"," Helix fullscreen · Ctrl+] exit to sidebar · :w save").into()}else if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
-                }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · Shift+Tab 查看验收/日志 · j/k 滚动"," Tests running · Ctrl+X / :verify-stop cancel · Shift+Tab evidence · j/k scroll").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
+                }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · 日志保存在私有测试记录"," Tests running · Ctrl+X / :verify-stop cancel · logs retained in private test records").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
                     if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · Ctrl+] 回工作台；编辑按键不触发外部动作".into()}
-                }else if app.config.language==crate::config::Language::English {
+                }else if app.showing_task_conversation() && app.panel==Panel::Reader{app.tr(" 对话 · j/k 翻阅 · Home 最早 / End 最新 · i 讨论"," Conversation · j/k scroll · Home oldest / End latest · i discuss").into()}else if app.config.language==crate::config::Language::English {
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
 format!(
-                    " {}{} 切面板 · {} 解释 · {} 全屏 · {} 测试 · {} 命令 · {} 帮助",
+                    " {}{} 切面板 · {} 全屏 · {} 测试 · {} 命令 · {} 帮助",
                     if app.view == View::Review {
                         format!(
                             "{} 批准 · 自动实时预览 · {} 合并 · {} 删除 · ",
@@ -362,7 +382,6 @@ format!(
                         String::new()
                     },
                     app.keymap.hint(Action::NextPanel),
-                    app.keymap.hint(Action::Explain),
                     app.keymap.hint(Action::Fullscreen),
                     app.keymap.hint(Action::Verify),
                     app.keymap.hint(Action::Palette),
@@ -1577,6 +1596,7 @@ struct ReaderKey {
 }
 #[derive(Default)]
 struct ReaderCache {
+    conversation_max: Option<usize>,
     key: Option<ReaderKey>,
     lines: Vec<(String, i8)>,
     contract_lines: Option<Vec<SemanticLine>>,
@@ -1760,7 +1780,10 @@ pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
 }
 
 pub fn editor_size_for(app: &App, area: Rect) -> (u16, u16) {
-    let (rows, cols) = editor_size(area, app.fullscreen);
+    let (rows, mut cols) = editor_size(area, app.fullscreen);
+    if !app.fullscreen && area.width >= 116 && !app.has_evidence_panel() {
+        cols = area.width.saturating_sub(30).clamp(1, 400);
+    }
     if app.view == View::Review && app.review_chat_open && (app.fullscreen || area.width < 116) {
         (
             ((rows + 2) as u32 * 65 / 100)
@@ -2128,11 +2151,23 @@ fn reader(frame: &mut Frame, app: &App, area: Rect, theme: Theme, cache: &mut Re
         return;
     }
     cache.prepare(app, area.width.saturating_sub(2));
-    let scroll = if app.view == View::Tasks || app.showing_node_contract() {
-        app.task_scroll
+    let length = cache
+        .contract_lines
+        .as_ref()
+        .map_or(cache.lines.len(), Vec::len);
+    let conversation_max = length.saturating_sub(area.height.saturating_sub(2) as usize);
+    if app.showing_task_conversation() {
+        cache.conversation_max = Some(conversation_max);
+    }
+    let scroll = if app.showing_task_conversation() {
+        app.conversation_top
+            .unwrap_or(conversation_max)
+            .min(conversation_max)
+    } else if app.view == View::Tasks || app.showing_node_contract() {
+        app.task_scroll as usize
     } else {
-        app.current().map_or(0, |item| item.scroll)
-    } as usize;
+        app.current().map_or(0, |item| item.scroll) as usize
+    };
     let content: Vec<Line> = if let Some(lines) = &cache.contract_lines {
         lines
             .iter()

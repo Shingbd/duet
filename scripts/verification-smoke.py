@@ -44,7 +44,8 @@ with tempfile.TemporaryDirectory(prefix='duet-verify-') as d:
   spec={'argv':['python3','-c',"from pathlib import Path;assert Path('main.txt').read_text()=='delivery\\n';print('FIXED INPUT PASS')"],'criteria':[]}
   command(spec);wait(lambda:node().get('verification_runs',[])[-1]['outcome']=='Passed');assert node()['verification']=='Unverified' and node()['review']=='Pending'
   spec['criteria']=[1,2];command(spec);wait(lambda:node()['verification']=='Passed');assert node()['review']=='Pending'
-  send(b'\x1b[Z');send(b'j');drain(.2);assert '测试证据' in clean() and 'FIXED INPUT PASS' in clean()
+  assert 'FIXED INPUT PASS' in node()['verification_runs'][-1]['output'],'hidden evidence was deleted'
+  assert '验收 / 测试证据' not in clean(),'fixed evidence sidebar still visible'
   command({'argv':['python3','-c','raise SystemExit(2)'],'criteria':[1]});wait(lambda:node()['verification']=='Failed')
   command({'argv':['python3','-c','import time;time.sleep(10)'],'criteria':[1],'timeout_secs':30});send(b'\x18');wait(lambda:node()['verification_runs'][-1]['outcome']=='Cancelled')
   command({'argv':['python3','-c','import time;time.sleep(10)'],'criteria':[1],'timeout_secs':1});wait(lambda:node()['verification_runs'][-1]['outcome']=='TimedOut')

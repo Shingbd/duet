@@ -345,6 +345,9 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     let mut editor: Option<duet_workbench::editing::Session> = None;
     let mut verification: Option<duet_workbench::verification::Run> = None;
     duet_workbench::verification::recover(&mut app);
+    if app.panel == duet_workbench::app::Panel::Evidence && !app.has_evidence_panel() {
+        app.panel = duet_workbench::app::Panel::Queue;
+    }
     app.helix_review = config.review_editor == duet_workbench::config::ReviewEditor::Helix;
     let mut review_runtime = duet_workbench::review_chat::Runtime::default();
     let review_repo = Repository::open(store.directory().parent().unwrap()).ok();
@@ -657,6 +660,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 );
             }
             terminal.draw(|frame| renderer.draw(frame, &app))?;
+            renderer.sync_conversation_bounds(&mut app);
             redraw = false;
         }
         // Paint first; persist batched navigation only after idle or a bounded delay.

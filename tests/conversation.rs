@@ -53,6 +53,75 @@ fn chat_roles_are_distinct_empty_messages_and_duplicate_final_text_are_hidden() 
 }
 
 #[test]
+fn task_conversation_opens_at_tail_and_history_anchor_survives_new_messages() {
+    let mut app = App::empty(Keymap::default());
+    app.task = Some("conversation".into());
+    app.view = View::Tasks;
+    app.panel = Panel::Reader;
+    app.history.push(Message {
+        session: "s".into(),
+        role: "assistant".into(),
+        content: format!(
+            "FIRST_MARKER\n{}\nLATEST_MARKER",
+            (0..300)
+                .map(|i| format!("history {i:03} 中文"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    });
+    let mut renderer = ui::Renderer::default();
+    let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+    fn paint(
+        renderer: &mut ui::Renderer,
+        terminal: &mut Terminal<TestBackend>,
+        app: &mut App,
+    ) -> String {
+        terminal.draw(|f| renderer.draw(f, app)).unwrap();
+        renderer.sync_conversation_bounds(app);
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    }
+    let latest = paint(&mut renderer, &mut terminal, &mut app);
+    assert!(latest.contains("LATEST_MARKER"));
+    assert!(!latest.contains("FIRST_MARKER"));
+    assert!(app.conversation_max > 0);
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    let first = paint(&mut renderer, &mut terminal, &mut app);
+    assert!(first.contains("FIRST_MARKER"));
+    assert!(!first.contains("LATEST_MARKER"));
+    let anchor = app.conversation_top;
+    app.history.push(Message {
+        session: "s".into(),
+        role: "assistant".into(),
+        content: "NEW_MESSAGE".into(),
+    });
+    app.content_revision += 1;
+    let unchanged = paint(&mut renderer, &mut terminal, &mut app);
+    assert_eq!(app.conversation_top, anchor);
+    assert_eq!(first, unchanged);
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert!(paint(&mut renderer, &mut terminal, &mut app).contains("NEW_MESSAGE"));
+    assert_eq!(app.conversation_top, None);
+    app.act(Action::Up);
+    assert_eq!(app.conversation_top, Some(app.conversation_max - 1));
+    app.act(Action::Down);
+    assert_eq!(app.conversation_top, None);
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    app.panel = Panel::Queue;
+    app.act(Action::Open);
+    assert_eq!(app.conversation_top, None);
+    assert!(paint(&mut renderer, &mut terminal, &mut app).contains("NEW_MESSAGE"));
+    let builds = renderer.layout_builds();
+    app.act(Action::Up);
+    paint(&mut renderer, &mut terminal, &mut app);
+    assert_eq!(renderer.layout_builds(), builds);
+}
+#[test]
 fn tool_only_events_do_not_create_visible_chat_and_streams_reset_between_messages() {
     let tool = json!({"role":"assistant","content":[{"type":"thinking","thinking":"private"},{"type":"toolCall","name":"read"}]});
     assert!(message_text(&tool).is_empty());
