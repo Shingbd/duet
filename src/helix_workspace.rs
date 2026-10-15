@@ -229,6 +229,12 @@ impl Workspace {
         }
         // Insert-mode bridge keys first leave insert mode; normal Helix bindings otherwise remain intact.
         config.push_str("\n[keys.insert]\n");
+        // Host file navigation is also available while inserting; finish the edit
+        // transaction before opening another buffer, without writing either one.
+        config.push_str(&format!(
+            "F12 = {}\n",
+            serde_json::to_string(&vec!["normal_mode", ":open \"%sh{__duet_open}\""])?
+        ));
         for (key, action) in [
             ("C-g", "ask"),
             ("C-s", "publish"),

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
   assert 'HELIX' in clean();send(b'\t')
   # Helix insert mode. Duet must forward q/i/: rather than treating them as its shortcuts.
   send(b'iedited in embedded helix ');send(b'\x1b')
-  send(b'\x1d');assert process.poll() is None
+  send(b'\x1b[17~');assert process.poll() is None
   send(b'q');assert process.poll() is None # Host termination confirmation, not an editor q.
   send(b'\x1b')
   send(b'\t');drain(.2)

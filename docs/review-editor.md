@@ -2,9 +2,9 @@
 
 ## Default: real Helix / 默认：真正 Helix
 
-**2** explicitly opens real Helix in an independent draft; **3** shares that session for project files. Sidebar selection follows the file automatically. **Tab** enters Helix, **Ctrl+]** captures the current unsaved buffer and returns to workbench focus. Ordinary editor keys never dispatch workbench actions, and failed initialization stays read-only. Duet manages private dark/light Helix themes without rewriting global configuration.
+**2** explicitly opens real Helix in an independent draft; **3** shares that session for project files. Sidebar selection follows the file automatically. **Tab** enters Helix, **F6** captures the current unsaved buffer and returns to workbench focus. Ordinary editor keys never dispatch workbench actions, and failed initialization stays read-only. Duet manages private dark/light Helix themes without rewriting global configuration.
 
-**2** 主动打开独立审核草稿中的真正 Helix，**3** 共用会话；侧栏选文件自动联动。**Tab** 进入，**Ctrl+]** 捕获未保存缓冲区并回工作台；编辑器按键不触发外部动作，初始化失败保持只读。使用私有深／浅配色，不改全局配置。
+**2** 主动打开独立审核草稿中的真正 Helix，**3** 共用会话；侧栏选文件自动联动。**Tab** 进入，**F6** 捕获未保存缓冲区并回工作台；编辑器按键不触发外部动作，初始化失败保持只读。使用私有深／浅配色，不改全局配置。
 
 - **Ctrl+G** captures path, cursor, flipped selection anchor, selected stdin and full unsaved stdin through Helix commands. Single-character normal selection means cursor word/current line; explicit Select mode or a longer selection means that exact range. Multi-selection/unbound paths/inconsistent position text are rejected. Only the excerpt and internal metadata reach Pi after question Enter; no range popup. Whole text remains local for stale protection.
 - **Ctrl+P → Enter** captures again before application, verifies full-buffer identity/version/revision/range, then the helper independently compares actual pipe input before replacing. Esc cancels; application stays unsaved in Helix and is undoable. No native-buffer write masquerades as a Helix edit.
@@ -47,7 +47,7 @@ Entry focus stays in the sidebar so approval/task shortcuts cannot unexpectedly 
 | Ctrl+G, `:ask` → Enter | Open contextual question input / 打开就地提问输入 |
 | Ctrl+P, `:apply` → Enter | Preview an AI suggestion; Enter applies, Esc cancels / 查看建议补丁，再 Enter 应用或 Esc 取消 |
 | Ctrl+S, `:w` → Enter | Persist draft and try publishing a new fixed revision / 保存草稿并尝试发布新固定修订 |
-| Ctrl+] | Return to sidebar/workbench / 回侧栏、工作台 |
+| F6 | Return to sidebar/workbench / 回侧栏、工作台 |
 | Ctrl+X | Stop active execution/discussion / 停止活动执行或讨论 |
 
 Clipboard paste edits the selected/current buffer; it never silently overwrites the approved snapshot. The gutter's `*` identifies unpublished human modifications. Deleted lines are read-only comparison rows, not text in the current editable buffer. Emptying code produces an empty file, not filesystem deletion.

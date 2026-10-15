@@ -316,9 +316,26 @@ fn require_terminal() -> Result<()> {
     Ok(())
 }
 
+static KEYBOARD_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn push_keyboard() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    )?;
+    KEYBOARD_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+fn pop_keyboard() {
+    if KEYBOARD_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+    }
+}
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        pop_keyboard();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
     }
@@ -330,8 +347,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
     enable_raw_mode().context("无法进入终端 raw mode")?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    push_keyboard()?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        pop_keyboard();
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
         previous(info);
@@ -746,11 +765,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             .mark_input(app.view == duet_workbench::app::View::Project);
                         app.helix_unknown =
                             !editor.as_ref().unwrap().workspace.unobserved.is_empty();
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                            && matches!(key.code, crossterm::event::KeyCode::Char(']' | '5'))
-                        {
+                        if let Some(delta) = duet_workbench::embedded::file_navigation(key) {
+                            app.navigate_editor_file(delta);
+                            changed = true;
+                        } else if key.code == crossterm::event::KeyCode::F(6) {
                             let s = editor.as_mut().unwrap();
                             if !matches!(
                                 s.target,
@@ -834,9 +852,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 host_changed |= changed;
                 // Resolve a fullscreen target/focus change before the next queued key.
                 if app.quit
-                    || (!fullscreen_before
-                        && app.fullscreen
-                        && (app.requested_fullscreen_focus || app.requested_project_open.is_some()))
+                    || (app.requested_fullscreen_focus
+                        || (!fullscreen_before
+                            && app.fullscreen
+                            && app.requested_project_open.is_some()))
                     || !event::poll(Duration::ZERO)?
                 {
                     break;
@@ -919,8 +938,12 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                                 app.editor_focused = focus;
                                 app.editor_project = true;
                                 app.review_compare = false;
+                                app.requested_fullscreen_focus = false;
                             }
-                            Err(error) => app.status = format!("未切换文件：{error}"),
+                            Err(error) => {
+                                app.requested_fullscreen_focus = false;
+                                app.status = format!("未切换文件：{error}");
+                            }
                         }
                     } else {
                         app.requested_editor =
@@ -1198,11 +1221,13 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                                     && !editor.to_string_lossy().chars().any(char::is_control),
                                 "DUET_EDITOR 仅接受可执行文件路径，不接受 shell 参数"
                             );
+                            pop_keyboard();
                             disable_raw_mode()?;
                             execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
                             let status = std::process::Command::new(editor).arg(&path).status();
                             enable_raw_mode()?;
                             execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+                            push_keyboard()?;
                             terminal.clear()?;
                             ensure!(status?.success(), "编辑器未正常退出，原草稿保留");
                             duet_workbench::conflict::refresh(&repo, &store, task, &mut draft)?;

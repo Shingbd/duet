@@ -13,20 +13,20 @@ Default `hx` resolution prefers PATH, then checks only bundled tools relative to
 ## Navigation / 操作
 
 - Sidebar: `j/k` or arrows select rows; `h/l` or left/right collapse/expand; selecting a file immediately opens it without Enter; Enter toggles a directory or explicitly reopens a file.
-- `Tab` focuses the editor; `Ctrl+]` returns to the tree. Editor-focused keys go to Helix, not Duet. Outside Project, a project editor does not obscure task/review content.
+- `Tab` focuses the editor; `F6` returns to the tree. Editor-focused keys go to Helix, not Duet. Outside Project, a project editor does not obscure task/review content.
 - `r` refreshes the tree; `z` toggles ignored files. Directories sort before files. `M/A/D/?/!` mark modified, added, deleted, untracked, ignored files.
 - Refresh/restart retain selected path and expanded directories; missing paths fall back safely. Restart does not restore Helix's unsaved buffers.
 - `.git` and `.duet` stay hidden, including with ignored files shown. Symlinks are not followed/opened. Deleted Git entries stay visible but cannot be opened as ordinary files.
 
 - 侧栏 `j/k` 或方向键选择；`h/l` 或左右键折叠/展开；选中文件即联动打开，无需 Enter；Enter 切换目录或明确重开文件。
-- `Tab` 进入编辑器；`Ctrl+]` 回文件树。编辑器焦点下按键交给 Helix，不触发 Duet。切到其他视图后，项目编辑器不会盖住任务/审核正文。
+- `Tab` 进入编辑器；`F6` 回文件树。编辑器焦点下按键交给 Helix，不触发 Duet。切到其他视图后，项目编辑器不会盖住任务/审核正文。
 - `r` 刷新，`z` 切换被忽略文件；目录优先。`M/A/D/?/!` 对应修改、新增、删除、未跟踪、被忽略。
 - 刷新/重启保留选中路径和展开状态；路径消失安全回退。重启不恢复 Helix 未保存缓冲区。
 - `.git` 和 `.duet` 始终隐藏，包括显示忽略项时；不跟随/打开符号链接。Git 删除项仍显示，但不能作为现存文件打开。
 
-Opening another file sends a bounded, quoted `:open` command to the **same Helix PTY**, without restarting or saving. Unsaved buffers remain managed by Helix. Each target is backed up before opening. Review and Project now share this real session and Duet-managed theme. If the user switches buffers inside Helix, Ctrl+] uses the explicit metadata/stdin bridge to validate and synchronize the managed file back to the tree; there is no continuous picker watcher. Contextual AI is enabled only for managed Review buffers, not Project files.
+Opening another file sends a bounded, quoted `:open` command to the **same Helix PTY**, without restarting or saving. Unsaved buffers remain managed by Helix. Each target is backed up before opening. Review and Project now share this real session and Duet-managed theme. If the user switches buffers inside Helix, F6 uses the explicit metadata/stdin bridge to validate and synchronize the managed file back to the tree; there is no continuous picker watcher. Contextual AI is enabled only for managed Review buffers, not Project files.
 
-打开另一文件通过有界、引用的 `:open` 命令交给**同一个 Helix PTY**，不重启、不保存；未保存缓冲区由 Helix 保留管理。每个目标打开前备份。审核与项目共享真实会话及 Duet 配色。Helix 内切换文件后，Ctrl+] 通过明确的元数据／stdin 桥校验实际文件并同步树；不是连续文件选择器监视。上下文 AI 仅开放受管审核缓冲区，未开放项目文件。
+打开另一文件通过有界、引用的 `:open` 命令交给**同一个 Helix PTY**，不重启、不保存；未保存缓冲区由 Helix 保留管理。每个目标打开前备份。审核与项目共享真实会话及 Duet 配色。Helix 内切换文件后，F6 通过明确的元数据／stdin 桥校验实际文件并同步树；不是连续文件选择器监视。上下文 AI 仅开放受管审核缓冲区，未开放项目文件。
 
 Use Helix `:w`, `:wa`, `:wqa` or its ordinary buffer commands explicitly. `:wq` only follows Helix's own save/quit rules; Duet never silently saves other buffers. Quitting Duet with an editor running still requires termination confirmation and warns about losing unsaved buffers. Saved files remain uncommitted. Source-mutating AI/integration workflows are interlocked with the editor session.
 

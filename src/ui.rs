@@ -354,9 +354,9 @@ fn draw_cached(
             Line::from(status_spans),
             Line::from(Span::styled(
                 if app.editor_focused {
-                    if app.fullscreen {app.tr(" Helix 全屏 · Ctrl+] 退出全屏/回侧栏 · :w 保存"," Helix fullscreen · Ctrl+] exit to sidebar · :w save").into()}else if app.editor_conflict{" Helix · 原生按键 · Ctrl+] 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · Ctrl+] 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · Ctrl+] 文件树 · :w 保存 · 不自动提交".into()}
+                    if app.fullscreen {app.tr(" Helix 全屏 · F6 退出全屏/回侧栏 · :w 保存"," Helix fullscreen · F6 exit to sidebar · :w save").into()}else if app.editor_conflict{" Helix · 原生按键 · F6 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · F6 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · F6 文件树 · :w 保存 · 不自动提交".into()}
                 }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · 日志保存在私有测试记录"," Tests running · Ctrl+X / :verify-stop cancel · logs retained in private test records").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
-                    if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · Ctrl+] 回工作台；编辑按键不触发外部动作".into()}
+                    if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · F6 回工作台；编辑按键不触发外部动作".into()}
                 }else if app.showing_task_conversation() && app.panel==Panel::Reader{app.tr(" 对话 · j/k 翻阅 · Home 最早 / End 最新 · i 讨论"," Conversation · j/k scroll · Home oldest / End latest · i discuss").into()}else if app.config.language==crate::config::Language::English {
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
@@ -421,7 +421,7 @@ format!(
                         "Helix 具有当前账号权限，可打开其他文件/调用其配置工具；PTY/worktree 不是 OS 沙箱。",
                     ),
                     Line::from(
-                        "Ctrl+] 切回 Duet · Tab 回 Helix · :wq 保存退出 · Enter 启动 / Esc 取消",
+                        "F6 切回 Duet · Tab 回 Helix · :wq 保存退出 · Enter 启动 / Esc 取消",
                     ),
                 ],
                 110,
@@ -1826,9 +1826,9 @@ fn render_editor(
 ) {
     let block = theme.block(
         if focused && persistent {
-            " HELIX · Ctrl+] 侧栏 · Space q 保存返回 "
+            " HELIX · Ctrl+[/] 切文件 · F6 侧栏 "
         } else if focused {
-            " HELIX · Ctrl+] → Duet · :wq 保存退出 "
+            " HELIX · F6 → Duet · :wq 保存退出 "
         } else {
             " HELIX · Tab 回编辑器 "
         },

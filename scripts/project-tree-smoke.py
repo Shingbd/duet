@@ -22,19 +22,23 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
   assert 'HELIX' in clean();send(b'\t')
   children=pathlib.Path('/proc/'+str(process.pid)+'/task/'+str(process.pid)+'/children')
   editor_pid=children.read_text().strip()
-  send(b'ifirst unsaved ');send(b'\x1b');send(b'\x1d')
+  send(b'ifirst unsaved ') # navigation must work directly from insert mode
+  send(b'\x1d');send(b'ivia_nav ') # Ctrl+] stays inside Helix, opens next visible file
+  send(b'\x1b[91;5u');send(b'iprev_nav ');send(b'\x1b') # disambiguated Ctrl+[ goes back, raw Esc stays Esc
+  send(b'\x1d');send(b'\x1b[5;5~');send(b'\x1b[17~') # portable Ctrl+PageUp fallback, then explicit F6
+  assert children.read_text().strip()==editor_pid
   # Directory first ordering: main.txt -> src -> expand -> second file.
   send(b'klj');drain(.6)
   assert source.read_text()=='original file\n','switch must not save first buffer'
   send(b't');drain(.3);assert b'48;2;245;246;250' in output,'light theme not rendered';send(b't');drain(.3)
   assert children.read_text().strip()==editor_pid,'switch restarted editor'
-  send(b'\t');send(b'isecond unsaved ');send(b'\x1b');send(b'\x1d')
+  send(b'\t');send(b'isecond unsaved ');send(b'\x1b');send(b'\x1b[17~')
   assert second.read_text()=='second original\n'
   # Collapse src from child, then open main; original unsaved buffer must still exist.
-  send(b'hj');drain(.4);send(b'j');drain(.4);send(b'\t');send(b'ithird unsaved ');send(b'\x1b');send(b'\x1d');drain(.4);send(b'k');drain(.4);send(b'\t');send(b':wqa\r');drain(1)
-  assert source.read_text()=='first unsaved original file\n',source.read_text()
+  send(b'hj');drain(.4);send(b'j');drain(.4);send(b'\t');send(b'ithird unsaved ');send(b'\x1b');send(b'\x1b[17~');drain(.4);send(b'k');drain(.4);send(b'\t');send(b':wqa\r');drain(1)
+  assert source.read_text()=='prev_nav first unsaved original file\n',source.read_text()
   assert second.read_text()=='second unsaved second original\n',second.read_text()
-  assert special.read_text()=='third unsaved literal percent\n',special.read_text();assert not (project/'marker').exists(),'filename interpolation executed'
+  assert special.read_text()=='third unsaved via_nav literal percent\n',special.read_text();assert not (project/'marker').exists(),'filename interpolation executed'
   assert subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD'])==original,'must not auto commit'
   assert list((project/'.duet/backups').glob('helix-*/before-file')),'backup missing'
   send(b'q');assert process.wait(timeout=4)==0;assert termios.tcgetattr(slave)==before

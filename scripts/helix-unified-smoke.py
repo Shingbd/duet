@@ -81,10 +81,10 @@ for line in sys.stdin:
         send(b'2f');drain(.5) # queued view+fullscreen keys must resolve the target before editing
         wait(lambda:records()[2]['panel']=='Reader')
         send(b'j');send(b'k');send(b'fc') # complete native find; not host fullscreen toggle
-        send(b'\x1d');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
+        send(b'\x1b[17~');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
         send(b'f');drain(.5);wait(lambda:records()[2]['panel']=='Reader')
         assert children()==editor_pid,'fullscreen restarted editor'
-        send(b'imanual_design ');send(b'\x1b')
+        send(b'\x1d');send(b'\x1b[91;5u');send(b'imanual_design ');send(b'\x1b') # review navigation retains editor focus
         send(b'ggv');send(b'l'*12);send(b'\x07');drain(.6)
         send(b'Discuss this design\r')
         wait(lambda:b'Discussed unsaved selection' in output)
@@ -109,7 +109,7 @@ for line in sys.stdin:
         send(b'iCOMPARE_EXIT_PROBE');send(b'\x1b');send(b'\x19');drain(.5)
         wait(lambda:any('COMPARE_EXIT_PROBE' in b['text'] for b in workspace()[0]))
         send(b'\t');send(b'u');send(b'\x19');drain(.5);wait(lambda:not any('COMPARE_EXIT_PROBE' in b['text'] for b in workspace()[0]))
-        send(b'\x1d');drain(.3)
+        send(b'\x1b[17~');drain(.3)
         task,node,_=records();candidate=project/'.duet/worktrees'/task['id']/'main.txt'
         assert candidate.read_text()=='second change\nnew growth'
         # Project/review share the same real process; j/k selects without Enter.
@@ -117,7 +117,7 @@ for line in sys.stdin:
         project_selection=records()[2]['project_tree_selected'];send(b'f');drain(.5)
         wait(lambda:records()[2]['panel']=='Reader');send(b'j');send(b'k');drain(.5)
         assert records()[2]['project_tree_selected']==project_selection,'fullscreen j/k navigated hidden file tree'
-        send(b'\x1d');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
+        send(b'\x1b[17~');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
         send(b'j');drain(.3);send(b'k');drain(.3);assert children()==editor_pid
         send(b'2');drain(.5);assert children()==editor_pid
         # Close all saved buffers, then independently approve and merge fixed revision.

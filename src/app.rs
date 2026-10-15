@@ -2059,6 +2059,37 @@ impl App {
     fn move_item(&mut self, delta: isize) {
         self.move_in(self.visible_file_indices(), delta);
     }
+    pub fn navigate_editor_file(&mut self, delta: isize) {
+        if self.editor_conflict {
+            return;
+        }
+        if self.view == View::Project {
+            let files: Vec<String> = self
+                .project_tree
+                .visible()
+                .iter()
+                .filter(|e| !e.directory && e.status != 'D')
+                .map(|e| e.path.clone())
+                .collect();
+            if files.is_empty() {
+                return;
+            }
+            let index = files
+                .iter()
+                .position(|p| p == &self.project_tree.selected)
+                .unwrap_or(0);
+            let path = files[index.saturating_add_signed(delta).min(files.len() - 1)].clone();
+            self.project_tree.reveal(&path);
+            self.requested_project_open = Some(path);
+        } else if self.view == View::Review {
+            self.move_review_item(delta);
+            self.requested_review_helix = true;
+        } else {
+            return;
+        }
+        self.panel = Panel::Reader;
+        self.requested_fullscreen_focus = true;
+    }
     fn move_review_item(&mut self, delta: isize) {
         self.move_item(delta);
     }

@@ -48,7 +48,7 @@ def probe(binary=None):
    result={'binary':str(binary or hx),'fixture':'copied Rust source, comment insertion' if body is not None else '6000-line text','terminal':f'{a.cols}x{a.rows}','rust_syntax':a.rust_syntax if binary else 'upstream','samples':len(samples),'p50_ms':round(statistics.median(samples),2),'p95_ms':round(sorted(samples)[int(len(samples)*.95)-1],2),'max_ms':round(max(samples),2),'bytes_per_key_p50':statistics.median(traffic),'idle_host_cpu_percent':round(idle,2)}
    os.write(master,b'\x1b');drain(.1)
    if binary:
-    os.write(master,b'\x1d');drain(.4);os.write(master,b':editor-stop\r');drain(.1);os.write(master,b'\r');drain(.4);os.write(master,b'q')
+    os.write(master,b'\x1b[17~');drain(.4);os.write(master,b':editor-stop\r');drain(.1);os.write(master,b'\r');drain(.4);os.write(master,b'q')
    else:os.write(master,b':q!\r')
    drain(.3);p.wait(timeout=4);return result
   finally:

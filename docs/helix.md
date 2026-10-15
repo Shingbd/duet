@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文首页](../README.zh-CN.md) · [Review](review-editor.md) · [Project tree](project-tree.md)
 
-**Review 2 and Project 3 use the same real Unix PTY Helix session by default.** Duet now preloads a fresh editor at startup (`helix_startup:true`), without waiting for first file entry; no h confirmation. It opens the selected eligible project file or current immutable-bound review draft, using a private welcome buffer if there is no usable file. Startup retains the view and sidebar focus; file switching reuses this PID. Sidebar navigation opens the corresponding file without resetting other buffers. Tab focuses code, Ctrl+] returns. Restart launches a new editor, never recovers old execution/unsaved editor state. Explicit native review, helix_startup:false, and CLI active coding skip preloading; explicit stop does not trigger auto-start again. Missing hx is an error with a read-only fixed comparison, not a native editor disguised as Helix.
+**Review 2 and Project 3 use the same real Unix PTY Helix session by default.** Duet now preloads a fresh editor at startup (`helix_startup:true`), without waiting for first file entry; no h confirmation. It opens the selected eligible project file or current immutable-bound review draft, using a private welcome buffer if there is no usable file. Startup retains the view and sidebar focus; file switching reuses this PID. Sidebar navigation opens the corresponding file without resetting other buffers. Tab focuses code, F6 returns. Restart launches a new editor, never recovers old execution/unsaved editor state. Explicit native review, helix_startup:false, and CLI active coding skip preloading; explicit stop does not trigger auto-start again. Missing hx is an error with a read-only fixed comparison, not a native editor disguised as Helix.
 
-**审核 2 / 项目 3 默认共享真正 Unix PTY Helix**。打开 Duet 默认预载新的编辑器（helix_startup:true），不再等第一次进入文件；加载选中的可编辑项目文件或当前快照绑定审核草稿，无合适文件则用私有欢迎页。保留视图／侧栏焦点，首次文件入口复用 PID；不需 h 确认；侧栏选文件联动打开，保留其他缓冲区。Tab 进入代码，Ctrl+] 返回。重启启动新的编辑器，不复活旧执行／未保存状态；明确 native、helix_startup:false、CLI 活动编码不预载；明确停止后不会又自动启动；hx 缺失时说明错误、只读显示固定代码，不把原生编辑器假称 Helix。
+**审核 2 / 项目 3 默认共享真正 Unix PTY Helix**。打开 Duet 默认预载新的编辑器（helix_startup:true），不再等第一次进入文件；加载选中的可编辑项目文件或当前快照绑定审核草稿，无合适文件则用私有欢迎页。保留视图／侧栏焦点，首次文件入口复用 PID；不需 h 确认；侧栏选文件联动打开，保留其他缓冲区。Tab 进入代码，F6 返回。重启启动新的编辑器，不复活旧执行／未保存状态；明确 native、helix_startup:false、CLI 活动编码不预载；明确停止后不会又自动启动；hx 缺失时说明错误、只读显示固定代码，不把原生编辑器假称 Helix。
 
 ## Setup / 设置
 
@@ -26,16 +26,26 @@ The fixed acceptance/evidence sidebar is temporarily hidden; contextual AI chat 
 
 默认 `helix_rust_syntax:"fast"` 仅在私有配置精简Rust局部变量查询及嵌套语法注入；保留基础语法高亮／原始grammar／缩进／textobjects／LSP，但局部引用语义色彩、宏／format占位符／注释与内嵌语言的专门高亮会简化，宏内嵌套选择可能更粗。全局配置／配套runtime不改，其他语言不变；duet.json设 `"helix_rust_syntax":"full"`，保存各缓冲区后退出重开可恢复完整处理，不会热替换旧编辑器。调试构建现也启用opt-level=1，保留符号／断言，正式使用仍建议release。
 
+## Direct file navigation / 编辑区直接切文件
+
+- **Ctrl+] next / Ctrl+[ previous**: host-managed file order, Project skips directories/deleted entries in the visible tree; Review stays within the selected node's changed files. Stops at bounds. Same Helix PID, no automatic write/publication/approval, other unsaved buffers/undo remain. Insert-mode navigation finishes insertion and opens the target in normal mode.
+- **Esc remains Esc**. Legacy Ctrl+[ is the same byte as Esc, so we never reinterpret raw Esc as previous-file. Duet requests the standard disambiguation keyboard flag (CSI-u/Kitty-capable terminal required). For older terminals use **Ctrl+PageUp/PageDown**, or map Ctrl+[ to CSI `91;5u`. No custom model/network bridge.
+- **F6** returns to the sidebar and exits fullscreen, without saving; Tab refocuses Helix. Space q still explicitly saves/returns. Terminal keyboard flags are popped once on exit/panic and suspended/restored around the external conflict editor.
+
+Ctrl+]下一个／Ctrl+[上一个文件，不离开编辑焦点／全屏，沿当前侧栏可见文件顺序跳过目录／删除项，审核只在当前节点变更文件内切换，边界不循环。不自动保存／发布／批准，其他未保存buffer／撤销保留；插入模式也可直接切，切换后为正常模式。F6回侧栏并退出全屏，Tab回来；Space q仍明确保存当前文件并返回。
+
+**传统终端Ctrl+[与Esc无法区分**，不拦截原始Esc，否则会破坏Helix正常操作。已请求增强键盘区分协议，支持的终端可直接用Ctrl+[；老终端可用Ctrl+PageUp/PageDown，或自行将Ctrl+[映射为CSI `91;5u`。不会假称所有SSH客户端都支持。原生picker的任意未绑定文件没有连续身份监听，快捷键以宿主管理的侧栏选择为基准；上下文／批准仍按原有实际捕获及保守未知buffer保护。
+
 ## Focus / 焦点
 
-- Tab from sidebar → real Helix; workbench f → fullscreen **and Helix focus in one step**. j/k then move inside the editor, not the hidden tree. Ctrl+] → exit fullscreen and return to sidebar without saving/closing. Editor-focused f stays native find-character, not a fullscreen toggle.
+- Tab from sidebar → real Helix; workbench f → fullscreen **and Helix focus in one step**. j/k then move inside the editor, not the hidden tree. F6 → exit fullscreen and return to sidebar without saving/closing. Editor-focused f stays native find-character, not a fullscreen toggle.
 - Normal keys, selections, undo, searching, space menus and paste belong to Helix with editor focus. The footer shows editor controls, not approval/start shortcuts.
 - Review: Ctrl+G asks using real unsaved context; Ctrl+P previews then Enter applies, Esc cancels; Ctrl+S saves the private file and attempts fixed publication; Ctrl+D opens/closes read-only full diff.
 - `:w`, `:wa`, `:wqa` follow Helix rules. No automatic commit/approval/merge.
 - Quitting Duet with Helix running requires termination confirmation; stopping can lose uncaptured unsaved editor text. Saved private drafts and project files remain.
 - Context capture briefly pauses key dispatch. Errors/timeouts reject the operation instead of using guessed/stale text.
 
-- 侧栏 Tab → 真正 Helix；工作台 f → 全屏并一次聚焦 Helix，j/k 只移动编辑光标，不操作隐藏文件树；Ctrl+] → 退出全屏回侧栏，不保存、不关闭。编辑焦点 f 保留原生查找字符，不是全屏切换。
+- 侧栏 Tab → 真正 Helix；工作台 f → 全屏并一次聚焦 Helix，j/k 只移动编辑光标，不操作隐藏文件树；F6 → 退出全屏回侧栏，不保存、不关闭。编辑焦点 f 保留原生查找字符，不是全屏切换。
 - 编辑焦点下移动、选区、撤销、搜索、space 菜单、粘贴由 Helix 处理；底栏显示编辑器操作，不显示批准／启动键。
 - 审核 Ctrl+G 提问，Ctrl+P 预览再 Enter 应用／Esc 取消，Ctrl+S 保存私有文件并尝试固定发布，Ctrl+D 打开／返回只读完整 diff。
 - :w / :wa / :wqa 遵循 Helix；不自动提交／批准／合入。
@@ -48,9 +58,9 @@ File switching uses an internal F12 binding and an owned open.json request, not 
 
 切文件通过内部 F12 与受管请求一次执行，不逐字输入命令；helper 只返回 manifest 绑定的字面文件名，不求值代码／文件名。项目文件首次宿主打开时备份，重复访问不重复拷贝；首次工作区／文件 IO 仍有开销。
 
-**Space q** saves the current file and returns focus to the sidebar without quitting Helix or publishing review. Other unsaved buffers and undo history remain; Ctrl+] returns without saving. These are the recommended save-return/focus-return controls. Native `:wq` / `:q` retain upstream semantics: the process exits; default `helix_keepalive:true` then reopens the last managed file with saved drafts and a real Helix pane. The prior screen stays during startup, rather than a native-reader flash. This is process reconstruction, **not** a pretend interception of :wq; closed-process undo/unsaved state is not recovered. Abnormal exit and explicit stop do not auto-retry; restart of Duet follows helix_startup to preload a new editor, not the old one. Conflict/final-integration editors keep their original exit/capture lifecycle.
+**Space q** saves the current file and returns focus to the sidebar without quitting Helix or publishing review. Other unsaved buffers and undo history remain; F6 returns without saving. These are the recommended save-return/focus-return controls. Native `:wq` / `:q` retain upstream semantics: the process exits; default `helix_keepalive:true` then reopens the last managed file with saved drafts and a real Helix pane. The prior screen stays during startup, rather than a native-reader flash. This is process reconstruction, **not** a pretend interception of :wq; closed-process undo/unsaved state is not recovered. Abnormal exit and explicit stop do not auto-retry; restart of Duet follows helix_startup to preload a new editor, not the old one. Conflict/final-integration editors keep their original exit/capture lifecycle.
 
-**Space q** 保存当前文件并回侧栏，不退出／不发布审核；其他未保存缓冲区、撤销栈保留。Ctrl+] 不保存只返回，推荐使用这两个操作。原生 :wq / :q 仍退出进程；默认 keepalive 随后根据最后受管文件及已保存草稿重建真实 Helix，加载期间保留旧画面而不闪回原生阅读器。这是**进程重建，不是假称拦截 wq**，不恢复旧进程撤销／未保存状态。异常退出／明确停止不重试，重启按 helix_startup 预载新编辑器，不复活旧编辑器；冲突／最终集成编辑沿用原退出捕获规则。
+**Space q** 保存当前文件并回侧栏，不退出／不发布审核；其他未保存缓冲区、撤销栈保留。F6 不保存只返回，推荐使用这两个操作。原生 :wq / :q 仍退出进程；默认 keepalive 随后根据最后受管文件及已保存草稿重建真实 Helix，加载期间保留旧画面而不闪回原生阅读器。这是**进程重建，不是假称拦截 wq**，不恢复旧进程撤销／未保存状态。异常退出／明确停止不重试，重启按 helix_startup 预载新编辑器，不复活旧编辑器；冲突／最终集成编辑沿用原退出捕获规则。
 
 Before implementation/deletion/merge, leave focus and use host `:editor-stop → Enter` for explicit termination, or choose `helix_keepalive:false` if ordinary :wq should release the editor interlock. Stopping warns about unsaved loss. A-p and F12 are reserved internal bindings; Space q overrides the managed space-menu q entry.
 

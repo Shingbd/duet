@@ -265,9 +265,9 @@ pub fn start(
     app.editor_project = matches!(target, Target::Project { .. }) || startup;
     app.editor_conflict = matches!(target, Target::Integration { .. });
     app.status = if app.config.helix_keepalive && !app.editor_conflict {
-        "Helix 常驻代码框 · Ctrl+] 侧栏 · Space q 保存返回 · :editor-stop 明确停止".into()
+        "Helix 常驻代码框 · F6 侧栏 · Space q 保存返回 · :editor-stop 明确停止".into()
     } else {
-        "Helix 在代码框内运行 · Ctrl+] 切回 Duet · :wq 保存退出 · 不自动合入".into()
+        "Helix 在代码框内运行 · F6 切回 Duet · :wq 保存退出 · 不自动合入".into()
     };
     Ok(Session {
         terminal,

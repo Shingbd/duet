@@ -42,6 +42,17 @@ impl Selection {
         }
     }
 }
+/// Never treat legacy Esc as Ctrl+[; CSI-u disambiguation is required for it.
+pub fn file_navigation(key: KeyEvent) -> Option<isize> {
+    if key.kind == KeyEventKind::Release || !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char(']' | '5') | KeyCode::PageDown => Some(1),
+        KeyCode::Char('[') | KeyCode::PageUp => Some(-1),
+        _ => None,
+    }
+}
 pub struct PtyEditor {
     child: Child,
     master: File,

@@ -272,6 +272,49 @@ fn lowercase_jk_navigate_and_uppercase_keys_remain_unbound() {
 }
 
 #[test]
+fn file_navigation_disambiguates_escape_and_keeps_editor_fullscreen() {
+    use duet_workbench::{embedded::file_navigation, file_tree::Entry};
+    for (code, expected) in [
+        (KeyCode::Char(']'), Some(1)),
+        (KeyCode::Char('['), Some(-1)),
+        (KeyCode::PageUp, Some(-1)),
+        (KeyCode::PageDown, Some(1)),
+        (KeyCode::Esc, None),
+    ] {
+        assert_eq!(
+            file_navigation(KeyEvent::new(code, KeyModifiers::CONTROL)),
+            expected
+        );
+    }
+    assert_eq!(
+        file_navigation(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        None
+    );
+    let mut app = fixture_app();
+    app.view = View::Project;
+    app.fullscreen = true;
+    app.editor_focused = true;
+    app.project_tree.entries = vec![
+        Entry {
+            path: "a.rs".into(),
+            directory: false,
+            status: ' ',
+        },
+        Entry {
+            path: "b.rs".into(),
+            directory: false,
+            status: ' ',
+        },
+    ];
+    app.project_tree.selected = "a.rs".into();
+    app.navigate_editor_file(1);
+    assert_eq!(app.requested_project_open.as_deref(), Some("b.rs"));
+    assert!(app.editor_focused && app.fullscreen);
+    assert_eq!(app.panel, Panel::Reader);
+    app.navigate_editor_file(-1);
+    assert_eq!(app.requested_project_open.as_deref(), Some("a.rs"));
+}
+#[test]
 fn compare_exit_routes_to_existing_helix_and_hidden_evidence_is_not_focusable() {
     let mut app = fixture_app();
     app.view = View::Review;

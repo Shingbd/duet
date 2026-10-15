@@ -63,7 +63,7 @@ cargo build --release
 
 ## 统一 Helix 与审核上下文 AI
 
-**2 审核和 3 项目使用同一个真正的框内 Helix 会话**，深／浅配色跟随 Duet，不再需要 h 启动。进入时焦点留在侧栏，**Tab** 进入 Helix，**Ctrl+]** 回工作台；代码焦点下按键属于 Helix，不触发外部批准／启动／退出。
+**2 审核和 3 项目使用同一个真正的框内 Helix 会话**，深／浅配色跟随 Duet，不再需要 h 启动。进入时焦点留在侧栏，**Tab** 进入 Helix，**F6** 回工作台；代码焦点下按键属于 Helix，不触发外部批准／启动／退出。
 
 审核代码放在绑定任务／节点固定快照的独立私有草稿，不改原交付。**Ctrl+D** 查看完整增删对比（只读），再 Ctrl+D 返回 Helix。**Ctrl+G** 通过命令／stdin 桥读取实际选区、光标与未保存全文，取选区或词／行，不猜终端画面；输入问题 Enter 直接发送，没有范围确认弹窗。AI 禁用全部工具；**Ctrl+P → Enter** 明确应用建议，并重新核对实际全文，过期则拒绝。
 
@@ -75,7 +75,7 @@ cargo build --release
 
 旧原生审核可以明确配置 `review_editor: "native"` 或 `--review-editor native`，不是 Helix；hx 缺失不会静默替换成原生编辑器。冲突／最终集成手工编辑仍保留 h 确认入口。
 
-切文件改用内部 F12 绑定一次执行，不再逐字输入 :open；首次文件／草稿加载仍有 IO 开销。**Space → q** 保存当前文件并回侧栏，Helix 同 PID、其他未保存缓冲区保留；Ctrl+] 只切焦点。原生 :wq 仍退出进程，但默认会重建 Helix 并保留代码区，不落回原生阅读器；重建不会保留退出进程的撤销栈。实现／合入前，在工作台 `:editor-stop → Enter` 明确停止，或配置 `helix_keepalive:false`。
+切文件改用内部 F12 绑定一次执行，不再逐字输入 :open；首次文件／草稿加载仍有 IO 开销。**Space → q** 保存当前文件并回侧栏，Helix 同 PID、其他未保存缓冲区保留；F6 只切焦点。原生 :wq 仍退出进程，但默认会重建 Helix 并保留代码区，不落回原生阅读器；重建不会保留退出进程的撤销栈。实现／合入前，在工作台 `:editor-stop → Enter` 明确停止，或配置 `helix_keepalive:false`。
 
 详见[Helix 设置与安全](docs/helix.md)、[审核讨论／发布](docs/review-editor.md)、[项目文件树](docs/project-tree.md)。
 

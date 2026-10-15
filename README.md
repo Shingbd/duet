@@ -63,7 +63,7 @@ Preferences include language (`zh-CN` / partial `en`), theme, initial view, keym
 
 ## Unified Helix + contextual review AI
 
-**2 Review and 3 Project now use the same real embedded Helix session**, with Duet's dark/light palette. No `h` launch step. Entry focus stays in the sidebar; **Tab** enters Helix and **Ctrl+]** returns. Editor-focused keys belong to Helix, not workbench shortcuts.
+**2 Review and 3 Project now use the same real embedded Helix session**, with Duet's dark/light palette. No `h` launch step. Entry focus stays in the sidebar; **Tab** enters Helix and **F6** returns. Editor-focused keys belong to Helix, not workbench shortcuts.
 
 In Review, files are independent private drafts bound to fixed task/node snapshots. **Ctrl+D** shows the read-only full additions/deletions comparison; Ctrl+D returns to Helix. **Ctrl+G** reads the actual selection (or cursor word/line), including unsaved text, through an explicit command/stdin bridge—not terminal-cell guesses. Enter directly submits the question without a range popup. AI discussion disables every Pi tool; **Ctrl+P → Enter** explicitly applies a suggestion only after rechecking the actual full buffer.
 
@@ -75,7 +75,9 @@ Default `hx` uses PATH or the already-installed executable-relative bundle. Duet
 
 An explicitly selected legacy native review backend remains available through `review_editor: "native"` / `--review-editor native`; it is never mislabeled Helix or silently selected when hx fails. Conflict/manual final-integration editing retains `h → Enter`.
 
-File switches now execute an internal F12 binding once, not typed :open sequences; first-load IO still applies. **Space q** saves the current file and returns focus with the same PID and other unsaved buffers intact. Ctrl+] only returns focus. Native :wq still exits its process; by default Duet reopens Helix without falling back to the native reader (editor undo history is not restored). Before implementation/integration, use host `:editor-stop → Enter`, or configure `helix_keepalive:false`.
+In Helix, Ctrl+] / Ctrl+[ select the next / previous managed file without leaving code or fullscreen; Ctrl+[ requires a terminal supporting keyboard disambiguation (legacy Esc stays Esc). Ctrl+PageDown/PageUp are portable alternatives. F6 returns to the workbench. Switching from insert mode ends insertion without saving; other buffers/undo remain.
+
+File switches now execute an internal F12 binding once, not typed :open sequences; first-load IO still applies. **Space q** saves the current file and returns focus with the same PID and other unsaved buffers intact. F6 only returns focus. Native :wq still exits its process; by default Duet reopens Helix without falling back to the native reader (editor undo history is not restored). Before implementation/integration, use host `:editor-stop → Enter`, or configure `helix_keepalive:false`.
 
 See [Helix setup/safety](docs/helix.md), [review discussion/publication](docs/review-editor.md), and [project tree](docs/project-tree.md).
 

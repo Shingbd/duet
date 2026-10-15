@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
   rendered=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',output[start:].decode(errors='replace'));assert 'first saved original file' in rendered,'live Helix buffer not rendered'
   assert child(),'wq left no editor';newpid=child()
   # New process has saved file; focus return alone retains unsaved buffers and PID.
-  send(b'\t');send(b'iafter return ');send(b'\x1b');send(b'\x1d');drain(.3)
+  send(b'\t');send(b'iafter return ');send(b'\x1b');send(b'\x1b[17~');drain(.3)
   assert child()==newpid and source.read_text()=='first saved original file\n'
   assert subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD'])==original
   send(b':editor-stop\r');send(b'\r');wait(lambda:not child())
