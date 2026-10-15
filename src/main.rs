@@ -928,8 +928,10 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                     if let Some(session) = &mut editor {
                         match duet_workbench::editing::switch_project(session, &store, &path) {
                             Ok(()) => {
-                                app.status =
-                                    format!("Helix 打开 {path} · 原缓冲区保留，未自动保存");
+                                if !app.requested_fullscreen_focus {
+                                    app.status =
+                                        format!("Helix 打开 {path} · 原缓冲区保留，未自动保存");
+                                }
                                 app.panel = if focus {
                                     duet_workbench::app::Panel::Reader
                                 } else {

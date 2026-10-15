@@ -25,10 +25,10 @@ for line in sys.stdin:
    assert 'new growth' not in code,'sent extra file text'
    text=json.dumps({'reply':'Discussed unsaved selection','replacement':{'old':code,'new':'better_design'}})
   elif planner:
-   node={'id':'change','title':'change source','objective':'update main','scope':['main.txt'],'boundaries':['only own main.txt'],'implementation':'edit main.txt','constraints':['no tests'],'dependencies':[],'acceptance':['inspect diff']}
+   node={'id':'change','title':'change source','objective':'update main','scope':['main.txt','keep.txt'],'boundaries':['only owned files'],'implementation':'edit main.txt','constraints':['no tests'],'dependencies':[],'acceptance':['inspect diff']}
    text=json.dumps({'reply':'ready','plan':{'schema_version':1,'objective':'goal','constraints':[],'acceptance':['inspect'],'nodes':[node]}})
   else:
-   pathlib.Path('main.txt').write_text('first change')
+   pathlib.Path('main.txt').write_text('first change');pathlib.Path('keep.txt').write_text('kept delivery change')
    emit({'type':'tool_execution_end','toolName':'write'});time.sleep(1)
    pathlib.Path('main.txt').write_text('second change\\nnew growth')
    emit({'type':'tool_execution_end','toolName':'edit'});time.sleep(1)
@@ -84,7 +84,10 @@ for line in sys.stdin:
         send(b'\x1b[17~');drain(.5);wait(lambda:records()[2]['panel']=='Queue')
         send(b'f');drain(.5);wait(lambda:records()[2]['panel']=='Reader')
         assert children()==editor_pid,'fullscreen restarted editor'
-        send(b'\x1d');send(b'\x1b[91;5u');send(b'imanual_design ');send(b'\x1b') # review navigation retains editor focus
+        send(b'\x1d');drain(.3) # keep.txt -> main.txt
+        send(b'\x1d');drain(.3);send(b'\x1d');drain(.3) # last -> first -> last
+        send(b'\x1b[91;5u');drain(.3);send(b'\x1b[91;5u');drain(.3) # first -> last backwards
+        send(b'imanual_design ');send(b'\x1b') # actual AI context must come from main.txt
         send(b'ggv');send(b'l'*12);send(b'\x07');drain(.6)
         send(b'Discuss this design\r')
         wait(lambda:b'Discussed unsaved selection' in output)

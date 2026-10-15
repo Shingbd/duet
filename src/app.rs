@@ -2061,6 +2061,7 @@ impl App {
     }
     pub fn navigate_editor_file(&mut self, delta: isize) {
         if self.editor_conflict {
+            self.status = "冲突编辑器保持当前文件；F6 返回工作台选择其他冲突".into();
             return;
         }
         if self.view == View::Project {
@@ -2071,18 +2072,48 @@ impl App {
                 .filter(|e| !e.directory && e.status != 'D')
                 .map(|e| e.path.clone())
                 .collect();
-            if files.is_empty() {
+            if files.len() < 2 {
+                self.status = if files.is_empty() {
+                    "当前没有可切换文件".into()
+                } else {
+                    format!("当前可见列表只有 1 个文件：{}", files[0])
+                };
                 return;
             }
             let index = files
                 .iter()
                 .position(|p| p == &self.project_tree.selected)
                 .unwrap_or(0);
-            let path = files[index.saturating_add_signed(delta).min(files.len() - 1)].clone();
+            let next = (index as isize + delta.signum()).rem_euclid(files.len() as isize) as usize;
+            let path = files[next].clone();
+            self.status = format!(
+                "切换文件 {}/{} · {} · 未自动保存",
+                next + 1,
+                files.len(),
+                path
+            );
             self.project_tree.reveal(&path);
             self.requested_project_open = Some(path);
         } else if self.view == View::Review {
-            self.move_review_item(delta);
+            let files = self.visible_file_indices();
+            if files.len() < 2 {
+                self.status = if files.is_empty() {
+                    "当前节点没有可切换文件".into()
+                } else {
+                    format!("当前节点只有 1 个文件：{}", self.items[files[0]].title)
+                };
+                return;
+            }
+            let index = files.iter().position(|&i| i == self.selected).unwrap_or(0);
+            let next = (index as isize + delta.signum()).rem_euclid(files.len() as isize) as usize;
+            self.selected = files[next];
+            self.filter.clear();
+            self.status = format!(
+                "切换文件 {}/{} · {} · 未自动保存",
+                next + 1,
+                files.len(),
+                self.items[self.selected].title
+            );
             self.requested_review_helix = true;
         } else {
             return;

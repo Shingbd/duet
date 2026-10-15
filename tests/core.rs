@@ -311,8 +311,15 @@ fn file_navigation_disambiguates_escape_and_keeps_editor_fullscreen() {
     assert_eq!(app.requested_project_open.as_deref(), Some("b.rs"));
     assert!(app.editor_focused && app.fullscreen);
     assert_eq!(app.panel, Panel::Reader);
-    app.navigate_editor_file(-1);
+    app.navigate_editor_file(1);
     assert_eq!(app.requested_project_open.as_deref(), Some("a.rs"));
+    assert!(app.status.contains("1/2"));
+    app.navigate_editor_file(-1);
+    assert_eq!(app.requested_project_open.as_deref(), Some("b.rs"));
+    assert!(app.status.contains("2/2"));
+    app.project_tree.entries.truncate(1);
+    app.navigate_editor_file(1);
+    assert!(app.status.contains("只有 1 个文件"));
 }
 #[test]
 fn compare_exit_routes_to_existing_helix_and_hidden_evidence_is_not_focusable() {

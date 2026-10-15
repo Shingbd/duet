@@ -28,11 +28,11 @@ The fixed acceptance/evidence sidebar is temporarily hidden; contextual AI chat 
 
 ## Direct file navigation / 编辑区直接切文件
 
-- **Ctrl+] next / Ctrl+[ previous**: host-managed file order, Project skips directories/deleted entries in the visible tree; Review stays within the selected node's changed files. Stops at bounds. Same Helix PID, no automatic write/publication/approval, other unsaved buffers/undo remain. Insert-mode navigation finishes insertion and opens the target in normal mode.
+- **Ctrl+] next / Ctrl+[ previous**: host-managed file order, Project skips directories/deleted entries in the visible tree; Review stays within the selected node's changed files. Wraps at both ends; status shows file position/path. A single-file list explicitly reports that there is no other file. Same Helix PID, no automatic write/publication/approval, other unsaved buffers/undo remain. Insert-mode navigation finishes insertion and opens the target in normal mode.
 - **Esc remains Esc**. Legacy Ctrl+[ is the same byte as Esc, so we never reinterpret raw Esc as previous-file. Duet requests the standard disambiguation keyboard flag (CSI-u/Kitty-capable terminal required). For older terminals use **Ctrl+PageUp/PageDown**, or map Ctrl+[ to CSI `91;5u`. No custom model/network bridge.
 - **F6** returns to the sidebar and exits fullscreen, without saving; Tab refocuses Helix. Space q still explicitly saves/returns. Terminal keyboard flags are popped once on exit/panic and suspended/restored around the external conflict editor.
 
-Ctrl+]下一个／Ctrl+[上一个文件，不离开编辑焦点／全屏，沿当前侧栏可见文件顺序跳过目录／删除项，审核只在当前节点变更文件内切换，边界不循环。不自动保存／发布／批准，其他未保存buffer／撤销保留；插入模式也可直接切，切换后为正常模式。F6回侧栏并退出全屏，Tab回来；Space q仍明确保存当前文件并返回。
+Ctrl+]下一个／Ctrl+[上一个文件，不离开编辑焦点／全屏，沿当前侧栏可见文件顺序跳过目录／删除项，审核只在当前节点变更文件内切换，首尾循环，状态栏显示序号／路径；只有一个文件时明确提示。不自动保存／发布／批准，其他未保存buffer／撤销保留；插入模式也可直接切，切换后为正常模式。F6回侧栏并退出全屏，Tab回来；Space q仍明确保存当前文件并返回。
 
 **传统终端Ctrl+[与Esc无法区分**，不拦截原始Esc，否则会破坏Helix正常操作。已请求增强键盘区分协议，支持的终端可直接用Ctrl+[；老终端可用Ctrl+PageUp/PageDown，或自行将Ctrl+[映射为CSI `91;5u`。不会假称所有SSH客户端都支持。原生picker的任意未绑定文件没有连续身份监听，快捷键以宿主管理的侧栏选择为基准；上下文／批准仍按原有实际捕获及保守未知buffer保护。
 
