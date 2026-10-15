@@ -621,7 +621,7 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                 let result = (|| -> Result<()> {
                     ensure!(
                         advisor.is_none() && coding.as_ref().is_none_or(|c| c.is_finished()),
-                        "AI 写入/顾问仍在运行；当前固定代码只读，请结束后按 2 打开 Helix"
+                        "AI 写入/顾问仍在运行；当前固定代码只读，请结束后切回审核视图 / Tab 打开 Helix"
                     );
                     let repo = review_repo.as_ref().context("审核需要 Git")?;
                     if let Some(s) = &mut editor {
@@ -743,6 +743,13 @@ fn run(mut app: App, mut store: WorkspaceStore, mut coding: Option<CodingRun>) -
                             .is_some_and(|s| s.workspace.pending.is_some()) =>
                     {
                         changed = false;
+                    }
+                    Event::Key(key)
+                        if matches!(app.mode, Mode::Browse)
+                            && !app.editor_conflict
+                            && app.keymap.view_action(key).is_some() =>
+                    {
+                        app.switch_view_key(app.keymap.view_action(key).unwrap());
                     }
                     Event::Key(key)
                         if matches!(app.mode, Mode::ConfirmReviewPatch { .. })

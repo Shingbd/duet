@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
    if pred():return
   raise AssertionError(clean()[-2000:])
  try:
-  drain(.5);wait(lambda:bool(child()));pid=child();send(b'3');drain(.5);assert child()==pid,'first file entry started another editor'
+  drain(.5);wait(lambda:bool(child()));pid=child();send(b'\x1bOR');drain(.5);assert child()==pid,'first file entry started another editor'
   send(b'\t');send(b'ifirst saved ');send(b'\x1b');send(b' q');drain(.4)
   assert child()==pid,'save-back exited Helix'
   assert source.read_text()=='first saved original file\n'

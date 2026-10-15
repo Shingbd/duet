@@ -272,6 +272,54 @@ fn lowercase_jk_navigate_and_uppercase_keys_remain_unbound() {
 }
 
 #[test]
+fn configured_view_keys_are_function_keys_and_preserve_editor_ownership() {
+    let mut app = fixture_app();
+    for (n, a) in [
+        (1, Action::Tasks),
+        (2, Action::Review),
+        (3, Action::Project),
+        (4, Action::Knowledge),
+    ] {
+        assert_eq!(
+            app.keymap
+                .view_action(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE)),
+            Some(a)
+        );
+        assert_eq!(
+            app.keymap.resolve(KeyEvent::new(
+                KeyCode::Char(char::from(b'0' + n)),
+                KeyModifiers::NONE
+            )),
+            None
+        );
+    }
+    let custom = Keymap::from_overrides(BTreeMap::from([
+        ("tasks".into(), vec!["F24".into()]),
+        ("review".into(), vec!["ctrl+f9".into()]),
+    ]))
+    .unwrap();
+    assert_eq!(
+        custom.view_action(KeyEvent::new(KeyCode::F(9), KeyModifiers::CONTROL)),
+        Some(Action::Review)
+    );
+    assert_eq!(
+        custom.view_action(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+        None
+    );
+    assert!(
+        Keymap::from_overrides(BTreeMap::from([("tasks".into(), vec!["f25".into()])])).is_err()
+    );
+    app.editor_focused = true;
+    app.fullscreen = true;
+    app.switch_view_key(Action::Project);
+    assert!(app.editor_focused && app.fullscreen);
+    assert!(app.requested_fullscreen_focus);
+    assert_eq!(app.panel, Panel::Reader);
+    app.switch_view_key(Action::Tasks);
+    assert!(!app.editor_focused && !app.fullscreen);
+    assert_eq!(app.view, View::Tasks);
+}
+#[test]
 fn file_navigation_disambiguates_escape_and_keeps_editor_fullscreen() {
     use duet_workbench::{embedded::file_navigation, file_tree::Entry};
     for (code, expected) in [

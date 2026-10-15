@@ -69,6 +69,20 @@ Project configuration is ordinary source data and can be committed. If creating/
 | `performance.save_delay_ms` | `300` | 50–5000 ms idle delay before UI-state saving / 界面状态闲置保存延迟 |
 | `performance.save_max_delay_ms` | `2000` | At least save_delay_ms, at most 10000 ms / 连续输入的最长保存延迟 |
 
+### View hotkeys / 页面快捷键
+
+Default **F1 Tasks / F2 Review / F3 Project / F4 Knowledge** replaces numeric 1–4. The same configured view bindings work from embedded Helix (Browse only), while digits remain native counts/text. Switching code views from editor focus preserves focus/fullscreen and the same editor; Tasks/Knowledge release editor focus. Chat/palette/authorization dialogs and conflict editing retain their own key handling. Client-intercepted function keys must be forwarded by the terminal. Explicit custom bindings take ownership of the chosen keys, including inside Helix; avoid printable keys if you want native editing unaffected.
+
+In project `duet.json`, set `"keymap_file": "keys.json"` (or CLI `--keymap keys.json`). In that separate JSON file:
+
+```json
+{"tasks":["f1"],"review":["f2"],"project":["f3"],"knowledge":["f4"]}
+```
+
+Supports `f1`–`f24` (also uppercase `F1`), e.g. `"ctrl+f9"`; unspecified actions inherit defaults, conflicting/unknown bindings fail validation. Configuration is read on startup, not hot reloaded. This is the existing keymap-file mechanism, not new unchecked properties in `duet.json`.
+
+默认F1任务／F2审核／F3项目／F4知识，可通过独立快捷键JSON中tasks／review／project／knowledge配置；在duet.json用keymap_file引用，修改后重启。Helix内与侧栏共用同一配置，不写死F1–F4；数字1–4保留为编辑器计数／文字。聊天／命令输入／确认框不拦截，未自动执行／批准／验证／合入。若显式把页面绑定为数字／字母，也会占用其Helix含义，建议用功能键。
+
 Theme and view configuration apply **after** saved UI-state restoration. `restore` preserves the old behavior; choosing a fixed theme reapplies that theme on each launch, even if `t` changed it during the previous session. Configuration is read at startup, not hot-reloaded. Credential storage remains owned by Pi; do not add API keys to this file.
 
 主题和视图在历史界面恢复**之后**应用。`restore` 保持原行为；固定主题每次启动重新应用，即使上次用 `t` 切换过。配置启动时读取，不热重载。认证仍由 Pi 管理，不要在此文件写入 API 密钥。

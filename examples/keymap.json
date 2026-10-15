@@ -1,4 +1,8 @@
 {
+  "tasks": ["f1"],
+  "review": ["f2"],
+  "project": ["f3"],
+  "knowledge": ["f4"],
   "quit": ["q", "ctrl+c"],
   "theme": ["t"],
   "help": ["?"],

@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='duet-verify-') as d:
   task={'id':'task','prompt':'verify fixture','sessions':[],'state':'Implemented','baseline':base,'checkpoint':cp,'plan':{'schema_version':1,'objective':'goal','constraints':[],'acceptance':['overall'],'nodes':[contract]}}
   n={'contract':contract,'execution':'Implemented','verification':'Unverified','review':'Pending','reviewed_checkpoint':None,'attempts':[{'base':base,'checkpoint':cp,'changed_files':1,'previews':[],'execution':'Implemented','summary':'not evidence','scope_violations':[],'verification':'Unverified','review':'Pending'}]}
   with sqlite3.connect(db) as c:c.execute('insert into tasks values(?,?)',('task',json.dumps(task)));c.execute('insert into nodes values(?,?,?,?)',('task','node',0,json.dumps(n)))
-  p=launch();drain(.5);send(b'\x1b[17~');send(b'1');send(b'j');send(b'2');drain(.3)
+  p=launch();drain(.5);send(b'\x1b[17~');send(b'\x1bOP');send(b'j');send(b'\x1bOQ');drain(.3)
   marker=root/'marker';spec={'argv':['python3','-c',f"from pathlib import Path;Path({str(marker)!r}).write_text('ran')"],'criteria':[]}
   command(spec,False);drain(.2);assert not marker.exists() and not node().get('verification_runs')
   send(b'm');assert '标记阅读完成' not in clean(),'removed read action still displayed'

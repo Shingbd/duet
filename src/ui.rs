@@ -356,7 +356,7 @@ fn draw_cached(
                 if app.editor_focused {
                     if app.fullscreen {app.tr(" Helix 全屏 · F6 退出全屏/回侧栏 · :w 保存"," Helix fullscreen · F6 exit to sidebar · :w save").into()}else if app.editor_conflict{" Helix · 原生按键 · F6 工作台 · :wq 保存修复".into()}else if app.view==View::Review{" Helix · F6 工作台 · Ctrl+g 讨论 · Ctrl+s 保存/发布 · Ctrl+p 建议 · Ctrl+d 对比".into()}else{" Helix · 原生按键 · F6 文件树 · :w 保存 · 不自动提交".into()}
                 }else if app.verification_active{app.tr(" 测试运行中 · Ctrl+X / :verify-stop 停止 · 日志保存在私有测试记录"," Tests running · Ctrl+X / :verify-stop cancel · logs retained in private test records").into()}else if app.helix_review && app.view==View::Review && app.panel==Panel::Reader && app.selected_task().is_some() {
-                    if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{" 只读快照 · 2 / Tab 初始化 Helix · F6 回工作台；编辑按键不触发外部动作".into()}
+                    if app.review_compare{" 只读对照 · j/k 滚动 · Ctrl+d 返回 Helix".into()}else{format!(" 只读快照 · {} / Tab 初始化 Helix · F6 回工作台；编辑按键不触发外部动作",app.keymap.hint(Action::Review))}
                 }else if app.showing_task_conversation() && app.panel==Panel::Reader{app.tr(" 对话 · j/k 翻阅 · Home 最早 / End 最新 · i 讨论"," Conversation · j/k scroll · Home oldest / End latest · i discuss").into()}else if app.config.language==crate::config::Language::English {
                     format!("{} discuss · {} start · {} merge · {} focus · {} help · English UI: partial",app.keymap.hint(Action::Reply),app.keymap.hint(Action::StartTask),app.keymap.hint(Action::MergeTask),app.keymap.hint(Action::NextPanel),app.keymap.hint(Action::Help))
                 }else{
@@ -2011,7 +2011,10 @@ fn native_review(
             if app.review_compare {
                 "只读对比 · j/k 滚动 · Ctrl+d 返回 Helix".into()
             } else {
-                "只读快照 · 2 / Tab 打开 Helix；未初始化时不接受编辑/批准快捷键".into()
+                format!(
+                    "只读快照 · {} / Tab 打开 Helix；未初始化时不接受编辑/批准快捷键",
+                    app.keymap.hint(Action::Review)
+                )
             }
         } else {
             buffer.command.as_ref().map(|(search,text)|format!("{}{}",if *search{"/"}else{":"},safe_text(text))).unwrap_or_else(||"i 编辑 · v/Shift方向 选区 · Ctrl+g/:ask 讨论 · Ctrl+s 发布 · Ctrl+d 对比 · Ctrl+] 工作台".into())

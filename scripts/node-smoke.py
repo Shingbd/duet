@@ -77,7 +77,7 @@ for line in sys.stdin:
         assert nodes[0]['execution']=='Implemented' and nodes[1]['execution']=='Implemented'
         assert nodes[2]['execution']=='Planned'
         assert all(n['verification']=='Unverified' for n in nodes)
-        send(b'2')
+        send(b'\x1bOQ')
         send(b':approve-node\r')
         assert records()[0][0]['review']=='Pending','command must require confirmation'
         send(b'\x1b')
@@ -111,14 +111,24 @@ for line in sys.stdin:
         assert process.wait(timeout=3)==0
         assert termios.tcgetattr(slave)==before
         if len(sys.argv)>2:
-            cfg=base/'helix-nav.json';cfg.write_text(json.dumps({'helix_startup':False,'helix_keepalive':False}))
+            keys=base/'navkeys.json';keys.write_text(json.dumps({'tasks':['f9'],'review':['f10'],'project':['f11']}))
+            cfg=base/'helix-nav.json';cfg.write_text(json.dumps({'helix_startup':False,'helix_keepalive':False,'keymap_file':str(keys)}))
             process=subprocess.Popen([str(binary),'--config',str(cfg),'--helix',str(pathlib.Path(sys.argv[2]).resolve()),'open',str(project)],stdin=slave,stdout=slave,stderr=slave,env=env)
             drain(.6);send(b'f');drain(1)
             def selected_node():
                 with sqlite3.connect(database) as db:return json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])['task_selection']['node_id']
+            def selected_view():
+                with sqlite3.connect(database) as db:return json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])['view']
             def editor_children():return pathlib.Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text().strip()
             editor_pid=editor_children();assert editor_pid
-            send(b'iNODE_TWO_DRAFT');send(b'\x1b')
+            send(b'iNODE_TWO_DRAFT') # switch away directly from insert mode
+            send(b'\x1b[23~');wait(lambda:selected_view()=='Project');drain(.4) # configured F11, still editor focus
+            send(b'\x1b[21~');wait(lambda:selected_view()=='Review');drain(.4) # configured F10
+            send(b'i1234');send(b'\x1b') # digits belong to Helix, not view shortcuts
+            send(b'\x1bOS');wait(lambda:selected_view()=='Knowledge') # default F4, release editor focus
+            send(b'\x1b[20~');wait(lambda:selected_view()=='Tasks') # configured F9
+            send(b'\x1b[21~');wait(lambda:selected_view()=='Review');drain(.4);send(b'\t');drain(.3) # return via configured key, refocus
+            assert editor_children()==editor_pid,'view switch restarted Helix'
             send(b'\x1b[93;6u');wait(lambda:selected_node()=='n3');drain(.4)
             send(b'iNODE_THREE_DRAFT');send(b'\x1b')
             send(b'\x1b[123;5u');wait(lambda:selected_node()=='n2');drain(.3)
@@ -129,8 +139,8 @@ for line in sys.stdin:
             send(b':wqa\r');drain(1);wait(lambda:not editor_children())
             manifests=list((project/'.duet/helix-workspaces').glob('*/manifest.json'));assert len(manifests)==1
             bindings=json.loads(manifests[0].read_text())['bindings']
-            bodies={b['identity']['node']:pathlib.Path(b['file']).read_text() for b in bindings if b['identity'].get('node')}
-            assert 'NODE_TWO_DRAFT' in bodies['n2'] and 'RETURNED_TWO' in bodies['n2'],bodies
+            bodies={b['identity']['node']:pathlib.Path(b['file']).read_text() for b in bindings if (b['identity'] or {}).get('node')}
+            assert 'NODE_TWO_DRAFT' in bodies['n2'] and 'RETURNED_TWO' in bodies['n2'] and '1234' in bodies['n2'],bodies
             assert 'NODE_THREE_DRAFT' in bodies['n3'],bodies
             assert not any((project/f'file{i}.txt').exists() for i in range(1,4)),'main files changed'
             assert [n['review'] for n in records()[0]]==['Approved','Pending','Pending']

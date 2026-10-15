@@ -64,9 +64,9 @@ for line in sys.stdin:
         raise AssertionError('timeout: '+str(records())+' output='+repr(bytes(output[-2500:])))
     def head():return subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD']).decode().strip()
     try:
-        process=launch();drain(.4);send(b'1iDiscuss the source change\r')
+        process=launch();drain(.4);send(b'\x1bOPiDiscuss the source change\r')
         wait(lambda:records()[0]['state']=='Ready');send(b's\r')
-        wait(lambda:records()[1]['execution']=='Running');send(b'2')
+        wait(lambda:records()[1]['execution']=='Running');send(b'\x1bOQ')
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=1)
         first=records()[1]['attempts'][0]['previews'][0]
         assert b'old baseline' in output and b'first change' in output
@@ -105,7 +105,7 @@ for line in sys.stdin:
         assert records()[0]['merged']['commit']==merged
         assert (project/'main.txt').read_text()=='better_designsecond change\nnew growth'
         assert (project/'keep.txt').read_text()=='keep\n'
-        send(b'3');drain(.4);assert records()[2]['selected'][0]==merged,'Project view refreshes to merged HEAD'
+        send(b'\x1bOR');drain(.4);assert records()[2]['selected'][0]==merged,'Project view refreshes to merged HEAD'
         send(b'q');assert process.wait(timeout=3)==0;assert termios.tcgetattr(slave)==before
         process=launch();drain(.5)
         assert records()[0]['state']=='Merged' and head()==merged

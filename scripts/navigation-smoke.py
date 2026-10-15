@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix="duet-navigation-") as directory:
 
     try:
         drain(0.6)
-        send(b"3")  # Baseline file navigation belongs to the project view.
+        send(b'\x1bOR')  # Baseline file navigation belongs to the project view.
         send(b"jJK")
         assert state()[0]["project_tree_selected"] == "b.rs" and state()[1] == 0
         send(b"jk")

@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
  def send(data):os.write(master,data);drain(.25)
  def clean():return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',output.decode(errors='replace'))
  try:
-  drain(.5);send(b'3');drain(2);assert source.read_text()=='original file\n'
+  drain(.5);send(b'\x1bOR');drain(2);assert source.read_text()=='original file\n'
   assert 'HELIX' in clean();send(b'\t')
   # Helix insert mode. Duet must forward q/i/: rather than treating them as its shortcuts.
   send(b'iedited in embedded helix ');send(b'\x1b')

@@ -32,14 +32,14 @@ with tempfile.TemporaryDirectory(prefix='duet-helix-') as directory:
  try:
   wait(lambda:bool(child()));drain(.3);pid=child()
   assert source.read_text()=='original file\n'
-  send(b'3');drain(.3);assert child()==pid,'first entry relaunched Helix'
-  send(b'1');close();assert termios.tcgetattr(slave)==before
+  send(b'\x1bOR');drain(.3);assert child()==pid,'first entry relaunched Helix'
+  send(b'\x1bOP');close();assert termios.tcgetattr(slave)==before
   # Restart is a NEW process, not recovered executing/model/editor state.
   process=launch();wait(lambda:bool(child()));drain(.3);assert child()!=pid
-  send(b'3');close();
+  send(b'\x1bOR');close();
   # Empty/non-Git project still gets a real private welcome buffer.
   empty=base/'empty';empty.mkdir();process=launch(empty);wait(lambda:bool(child()));drain(.3)
-  send(b'3');send(b'\t');send(b' q');drain(.4)
+  send(b'\x1bOR');send(b'\t');send(b' q');drain(.4)
   assert 'Helix 已就绪' in clean() and not list(empty.glob('*.txt'))
   close();
   # Explicit opt-out and invalid custom executable do not silently fall back or loop.

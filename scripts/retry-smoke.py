@@ -64,7 +64,7 @@ for line in sys.stdin:
         raise AssertionError('timeout: '+str(records())+' output='+repr(bytes(output[-2500:])))
     def head():return subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD']).decode().strip()
     try:
-        process=launch();drain(.4);send(b'1iDiscuss the source change\r')
+        process=launch();drain(.4);send(b'\x1bOPiDiscuss the source change\r')
         wait(lambda:records()[0]['state']=='Failed')
         assert records()[0]['failure']['stage']=='Discussion'
         assert 'usage limit' in records()[0]['failure']['reason']

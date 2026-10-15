@@ -63,7 +63,7 @@ Preferences include language (`zh-CN` / partial `en`), theme, initial view, keym
 
 ## Unified Helix + contextual review AI
 
-**2 Review and 3 Project now use the same real embedded Helix session**, with Duet's dark/light palette. No `h` launch step. Entry focus stays in the sidebar; **Tab** enters Helix and **F6** returns. Editor-focused keys belong to Helix, not workbench shortcuts.
+**F2 Review and F3 Project now use the same real embedded Helix session**, with Duet's dark/light palette. No `h` launch step. Entry focus stays in the sidebar; **Tab** enters Helix and **F6** returns. Editor-focused keys belong to Helix, not workbench shortcuts.
 
 In Review, files are independent private drafts bound to fixed task/node snapshots. **Ctrl+D** shows the read-only full additions/deletions comparison; Ctrl+D returns to Helix. **Ctrl+G** reads the actual selection (or cursor word/line), including unsaved text, through an explicit command/stdin bridge—not terminal-cell guesses. Enter directly submits the question without a range popup. AI discussion disables every Pi tool; **Ctrl+P → Enter** explicitly applies a suggestion only after rechecking the actual full buffer.
 
@@ -92,9 +92,9 @@ Discuss → Confirm the plan → Implement nodes → Review checkpoints
 
 | Step | Action | What it authorizes |
 | --- | --- | --- |
-| Discuss | `1` → `i`, enter your request | Read-only AI discussion; no automatic implementation |
+| Discuss | `F1` → `i`, enter your request | Read-only AI discussion; no automatic implementation |
 | Start or continue | `s` → `Enter` | Write access in the task worktree for the confirmed plan |
-| Review/edit draft | `2`, Tab; `{` / `}` in workbench focus switch nodes | Full-code view and independent local edits; no automatic approval |
+| Review/edit draft | `F2`, Tab; `{` / `}` in workbench focus switch nodes | Full-code view and independent local edits; no automatic approval |
 | Test a fixed node | `v`, configure argv/criteria, Enter then Enter | Execute trusted project code in an independent snapshot worktree; no approval/merge |
 | Approve a node | `a` → `Enter` in review | Approve that exact checkpoint; no testing or merging |
 | Continue after a review pause | `p` | Explicitly resume; approval alone does not resume execution |
@@ -126,7 +126,7 @@ The default active budget is 600 seconds per start/continuation, excluding pause
 
 | Keys | Purpose |
 | --- | --- |
-| `1` / `2` / `3` / `4` | Tasks / Review / Project / Knowledge |
+| `F1` / `F2` / `F3` / `F4` | Tasks / Review / Project / Knowledge |
 | `Tab`, `j` / `k`, arrow keys | Change focus; select or scroll according to the focused panel |
 | `[` / `]` | Previous / next file |
 | `f`, `t`, `?` | Full screen, theme, help |

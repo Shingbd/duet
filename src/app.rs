@@ -1139,8 +1139,10 @@ impl App {
             if self.editor_screen.is_some() {
                 self.requested_helix_context = true;
             } else {
-                self.status =
-                    "请先按 2 / Tab 打开真正的 Helix，再 Ctrl+g 引用实际选区；未发送代码".into();
+                self.status = format!(
+                    "请先按 {} / Tab 打开真正的 Helix，再 Ctrl+g 引用实际选区；未发送代码",
+                    self.keymap.hint(Action::Review)
+                );
             }
             return;
         }
@@ -1753,6 +1755,25 @@ impl App {
         }
     }
 
+    pub fn switch_view_key(&mut self, action: Action) {
+        if !matches!(
+            action,
+            Action::Tasks | Action::Review | Action::Project | Action::Knowledge
+        ) {
+            return;
+        }
+        let focused = self.editor_focused;
+        let fullscreen = self.fullscreen;
+        self.editor_focused = false;
+        self.fullscreen = false;
+        self.act(action);
+        if focused && matches!(action, Action::Review | Action::Project) {
+            self.panel = Panel::Reader;
+            self.editor_focused = true;
+            self.fullscreen = fullscreen;
+            self.requested_fullscreen_focus = true;
+        }
+    }
     pub fn act(&mut self, action: Action) {
         match action {
             Action::Tasks => {
@@ -1934,7 +1955,12 @@ impl App {
             }
             Action::Theme => self.light = !self.light,
             Action::ApproveNode if self.view == View::Review => self.request_node_approval(),
-            Action::ApproveNode => self.status = "请按 2 进入审核，再批准当前节点版本".into(),
+            Action::ApproveNode => {
+                self.status = format!(
+                    "请按 {} 进入审核，再批准当前节点版本",
+                    self.keymap.hint(Action::Review)
+                )
+            }
             Action::MarkRead => self.status = "已读功能已移除；v 测试，a 明确批准".into(),
             Action::Verify => {
                 self.review_chat_open = false;

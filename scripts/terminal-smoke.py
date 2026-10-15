@@ -39,7 +39,7 @@ def drain(seconds):
 
 try:
     drain(0.3)
-    for keys in [b"?", b"\x1b", b":note " + "事务边界".encode() + b"\r", b"4", b"t", b"2", b"m", b"\x1b"]:
+    for keys in [b"?", b"\x1b", b":note " + "事务边界".encode() + b"\r", b"\x1bOS", b"t", b"\x1bOQ", b"m", b"\x1b"]:
         os.write(master, keys)
         drain(0.15)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 80, 0, 0))

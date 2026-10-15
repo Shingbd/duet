@@ -111,7 +111,7 @@ for line in sys.stdin.buffer:
 
     try:
         drain(0.5)
-        send(b'1p')
+        send(b'\x1bOPp')
         wait_status('Paused')
         worktree = next((project / '.duet/worktrees').iterdir())
         assert (worktree / 'main.rs').read_text() == 'draft'
@@ -139,7 +139,7 @@ for line in sys.stdin.buffer:
                                    stdin=slave, stdout=slave, stderr=slave,
                                    env={**os.environ, 'TERM': 'xterm-256color'})
         drain(0.5)
-        send(b'2')
+        send(b'\x1bOQ')
         drain(0.4)
         with sqlite3.connect(database) as db:
             saved = json.loads(db.execute("SELECT value FROM ui_state WHERE key='workspace'").fetchone()[0])

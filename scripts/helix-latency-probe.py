@@ -40,7 +40,7 @@ def probe(binary=None):
    s=pathlib.Path(f'/proc/{p.pid}/stat').read_text().split(') ',1)[1].split();return(int(s[11])+int(s[12]))/os.sysconf('SC_CLK_TCK')
   try:
    drain(1)
-   if binary:os.write(master,b'3');drain(1);os.write(master,b'\t');drain(.3)
+   if binary:os.write(master,b'\x1bOR');drain(1);os.write(master,b'\t');drain(.3)
    startcpu=cpu();start=time.perf_counter();drain(1);idle=100*(cpu()-startcpu)/(time.perf_counter()-start)
    os.write(master,b'gg2li' if body is not None else b'i');drain(.15);samples=[];traffic=[]
    for n in range(50):

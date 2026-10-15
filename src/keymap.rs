@@ -81,10 +81,10 @@ impl Action {
     }
 }
 pub const ACTIONS: &[(Action, &str, &[&str])] = &[
-    (Action::Tasks, "任务视图", &["1"]),
-    (Action::Review, "审核视图", &["2"]),
-    (Action::Project, "项目视图", &["3"]),
-    (Action::Knowledge, "知识视图", &["4"]),
+    (Action::Tasks, "任务视图", &["f1"]),
+    (Action::Review, "审核视图", &["f2"]),
+    (Action::Project, "项目视图", &["f3"]),
+    (Action::Knowledge, "知识视图", &["f4"]),
     (Action::NextPanel, "下一面板", &["tab"]),
     (Action::PreviousPanel, "上一面板", &["shift+tab"]),
     (Action::Up, "向上", &["up", "k"]),
@@ -173,6 +173,17 @@ impl Keymap {
         self.bindings.get(&(event.code, modifiers)).copied()
     }
 
+    pub fn view_action(&self, event: KeyEvent) -> Option<Action> {
+        if event.kind == crossterm::event::KeyEventKind::Release {
+            return None;
+        }
+        self.resolve(event).filter(|a| {
+            matches!(
+                a,
+                Action::Tasks | Action::Review | Action::Project | Action::Knowledge
+            )
+        })
+    }
     pub fn hint(&self, action: Action) -> &str {
         self.help
             .iter()
@@ -205,6 +216,14 @@ fn parse_key(value: &str) -> Result<(KeyCode, KeyModifiers)> {
         "esc" => KeyCode::Esc,
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
+        _ if name.starts_with(['f', 'F']) && name.len() > 1 => {
+            let n = name[1..]
+                .parse::<u8>()
+                .ok()
+                .filter(|n| (1..=24).contains(n))
+                .ok_or_else(|| anyhow::anyhow!("不支持的功能键：{value}"))?;
+            KeyCode::F(n)
+        }
         _ if name.chars().count() == 1 => KeyCode::Char(name.chars().next().unwrap()),
         _ => bail!("不支持的快捷键：{value}"),
     };

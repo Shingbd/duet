@@ -1,8 +1,8 @@
 # Project tree and seamless Helix / 项目文件树与 Helix
 
-Project (`3`) now has a hierarchical file tree, separate from Review's task/node changed-file list. **Pressing 3 explicitly opens the current project file in embedded Helix without h or an extra editor confirmation.** Opening/restarting Duet only restores navigation preferences; it never revives or automatically starts an editor/model.
+Project (`F3`) now has a hierarchical file tree, separate from Review's task/node changed-file list. **Pressing F3 explicitly opens the current project file in embedded Helix without h or an extra editor confirmation.** Opening/restarting Duet only restores navigation preferences; it never revives or automatically starts an editor/model.
 
-`3` 项目视图使用目录文件树；`2` 审核仍按任务/节点显示变更文件。**主动按 3 会直接在代码框中打开项目文件的 Helix，无需 h 或额外启动确认。** 现在打开／重启 Duet 默认预载新的 Helix，保留导航／侧栏焦点，第一文件入口复用 PID；空项目预载私有欢迎页。helix_startup:false 或明确 native 可关闭预载；不恢复旧进程／未保存编辑状态，不启动模型。明确停止后不会自动再次预载。
+`F3` 项目视图使用目录文件树；`F2` 审核仍按任务/节点显示变更文件。**主动按 F3 会直接在代码框中打开项目文件的 Helix，无需 h 或额外启动确认。** 现在打开／重启 Duet 默认预载新的 Helix，保留导航／侧栏焦点，第一文件入口复用 PID；空项目预载私有欢迎页。helix_startup:false 或明确 native 可关闭预载；不恢复旧进程／未保存编辑状态，不启动模型。明确停止后不会自动再次预载。
 
 Default `hx` resolution prefers PATH, then checks only bundled tools relative to the running Duet executable: `helix/hx` beside it or `../tools/helix-25.07.1-x86_64-linux/hx` (the local debug/release development bundle). No downloads or opened-project tool discovery occur. Explicit custom paths/names are not silently replaced. Otherwise install `hx` with its runtime or configure `helix_path` / `--helix /path/to/hx`.
 

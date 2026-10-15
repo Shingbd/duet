@@ -64,7 +64,7 @@ for line in sys.stdin:
             assert process.poll() is None,'TUI unexpectedly exited'
         raise AssertionError('state timed out: '+str(records()))
     try:
-        process=launch();drain(.4);send(b'1iDiscuss architecture and create two nodes\r')
+        process=launch();drain(.4);send(b'\x1bOPiDiscuss architecture and create two nodes\r')
         wait(lambda:records()[0][0]['state']=='Ready')
         candidate=next((project/'.duet/worktrees').iterdir())
         assert not (candidate/'file1.txt').exists()
@@ -73,9 +73,9 @@ for line in sys.stdin:
         assert termios.tcgetattr(slave)==before
         process=launch();drain(.4)
         assert records()[0][0]['state']=='Ready','restart must not execute'
-        send(b'1s\r')
+        send(b'\x1bOPs\r')
         wait(lambda:records()[1][0]['execution']=='Running')
-        send(b'2')
+        send(b'\x1bOQ')
         wait(lambda:len(records()[1][0]['attempts'][0].get('previews',[]))>=1)
         drain(.15)
         assert b'n1 first' in output and b'NORMAL' in output,'live editor must show first immutable code revision'
@@ -87,7 +87,7 @@ for line in sys.stdin:
         drain(.4)
         assert b'second' in output
         assert records()[2]['selected'][0]==records()[1][0]['attempts'][-1]['checkpoint']
-        send(b'1j')
+        send(b'\x1bOPj')
         wait(lambda:records()[2]['task_selection']['node_id']=='n2')
         send(b'd');assert len(records()[1])==2,'deletion requires confirmation'
         send(b'\x1b');send(b'd\r')

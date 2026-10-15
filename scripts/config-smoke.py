@@ -66,13 +66,13 @@ for line in sys.stdin:
         raise AssertionError('timeout: '+str(records())+' output='+repr(bytes(output[-2500:])))
     def head():return subprocess.check_output(['git','-C',str(project),'rev-parse','HEAD']).decode().strip()
     try:
-        process=launch();drain(.4);send(b'1bDiscuss the source change\r')
+        process=launch();drain(.4);send(b'\x1bOPbDiscuss the source change\r')
         wait(lambda:records()[0]['state']=='Ready')
         wait(lambda:records()[2] is not None)
         assert records()[2]['light'] is True,'configured light theme'
         assert b'Tasks' in output and b'Pi session' in output,'configured English core UI'
         send(b's\r')
-        wait(lambda:records()[1]['execution']=='Running');send(b'2')
+        wait(lambda:records()[1]['execution']=='Running');send(b'\x1bOQ')
         wait(lambda:len(records()[1]['attempts'][0].get('previews',[]))>=1)
         first=records()[1]['attempts'][0]['previews'][0]
         assert b'old baseline' in output and b'first change' in output and b'NORMAL' in output
