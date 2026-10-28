@@ -1,25 +1,36 @@
 # Duet Workbench
 
-**A local-first Rust terminal workbench for human–AI development.**
+**A local-first learning workbench for the AI era — learn projects faster with AI, and build projects you truly master. Any language.**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Turn a request into structured tasks, implement them in isolated Git worktrees, review immutable diffs, and decide explicitly what enters your project.
+AI can now write code faster than you can read it. The risk is ending up with a project that runs but that you cannot explain, extend, or debug. Duet is built around the opposite outcome: **use AI heavily, and still understand everything.**
 
-> **The AI proposes and implements. You authorize, review, and merge.**
+Duet works in two tracks:
+
+- **Read a project.** Take an existing codebase — in any programming language — and work through it as structured, dependency-ordered study nodes: discuss each part with the AI, take notes, and build a real mental model instead of skimming.
+- **Build a project.** Turn your own idea into structured tasks, let the AI implement them in isolated Git worktrees, then review immutable diffs node by node. Nothing enters your project until you have reviewed that exact version and approved it explicitly.
+
+The learning mechanisms live on the language-neutral layer — Git diffs, task nodes, discussion, and your own notes — so they work the same for Rust, C++, Python, TypeScript, or any other language your project uses.
+
+> **The AI proposes and implements. You authorize, review, understand, and merge.**
 > Opening Duet never calls a model or resumes an old task automatically.
+
+See [LEARNING.md](LEARNING.md) for how to learn with Duet — including a guided tour that uses Duet itself as the first study project.
 
 ## Why Duet?
 
-- **Structured work, not just chat.** Each task contains dependency-ordered nodes with objectives, scope, boundaries, implementation guidance, constraints, and acceptance criteria.
+- **Structured work, not just chat.** Each task contains dependency-ordered nodes with objectives, scope, boundaries, implementation guidance, constraints, and acceptance criteria — a natural unit for learning one concept at a time.
 - **Keep your project separate.** AI implementation runs in a managed worktree. Uncommitted changes in your main working directory are not silently included in a task.
-- **Review fixed versions.** Live previews and final deliveries are immutable Git snapshots. Review follows the selected node without stealing unrelated reading positions.
-- **Separate implementation, verification, and approval.** “Implemented” is not “tests passed.” Approval is tied to a specific node checkpoint.
+- **Review fixed versions.** Live previews and final deliveries are immutable Git snapshots. Review follows the selected node without stealing unrelated reading positions, so you can study a diff for as long as you need.
+- **Separate implementation, verification, and approval.** “Implemented” is not “tests passed,” and neither is “I understood it.” Approval is tied to a specific node checkpoint and is always an explicit human act.
 - **Human-led conflict resolution.** A read-only AI advisor can explain conflicting changes and their trade-offs. Only your confirmed choice modifies the integration draft.
-- **Local continuity.** SQLite stores discussions, contracts, attempts, notes, and reading state. Restarting restores history, not an executing agent.
+- **Local continuity.** SQLite stores discussions, contracts, attempts, notes, and reading state. Restarting restores your learning history, not an executing agent.
 - **Readable terminal UI.** Markdown, semantic contract colors, light/dark themes, and Unicode-aware input wrapping support Chinese text and long messages.
 
-**Early-stage project:** the current TUI is primarily Chinese. An optional English UI currently covers core navigation/session labels and help; workflow dialogs and many errors remain Chinese. Complete localization and multi-agent automation are not yet available.
+**Where this is heading:** per-node learning goals, an understanding check before approval unlocks, a “not understood yet” list fed from review marks, and guided reading tasks for external repositories. These are on the roadmap in [LEARNING.md](LEARNING.md); what is shipped today is the structured task/review/approval workflow described below.
+
+**Early-stage project:** the current TUI is primarily Chinese. An optional English UI currently covers core navigation/session labels and help; workflow dialogs and many errors remain Chinese. Complete localization is not yet available.
 
 ## Quick start
 
@@ -178,6 +189,7 @@ The test suite uses fake RPC processes and real temporary Git repositories/PTYs,
 
 ## Documentation
 
+- [Learning with Duet — positioning, dual tracks, and a guided tour of this codebase](LEARNING.md)
 - [Project tree and seamless Helix — bilingual](docs/project-tree.md)
 - [Editable review and contextual AI — bilingual](docs/review-editor.md)
 - [Embedded Helix — bilingual](docs/helix.md)
