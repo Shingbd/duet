@@ -32,3 +32,11 @@ jobs:
 
       - name: Test
         run: cargo test
+        env:
+          # GitHub-hosted runners preinstall Git LFS filters in the system/global
+          # git config. Duet's merge safety check reads `git config` across all
+          # scopes and refuses repos with custom filters, so every merge test
+          # would fail on the runner while passing on a clean machine. Isolate
+          # the test step from the host's git config; repo-local config is kept.
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_CONFIG_GLOBAL: /dev/null
