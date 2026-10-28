@@ -178,3 +178,60 @@ fn read_rejects_large_and_non_utf8_files_without_crashing() {
     assert!(repo.read(&baseline, "large").is_err());
     assert!(repo.read(&baseline, "binary").is_err());
 }
+
+#[test]
+fn guards_reject_repository_local_drivers_and_filters() {
+    let dir = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    repo.verification_guard().unwrap();
+    repo.merge_guard().unwrap();
+    git(
+        dir.path(),
+        &["config", "filter.evil.smudge", "touch should-not-run"],
+    );
+    assert!(repo.verification_guard().is_err());
+    assert!(repo.merge_guard().is_err());
+    git(dir.path(), &["config", "--unset", "filter.evil.smudge"]);
+    git(
+        dir.path(),
+        &["config", "merge.evil.driver", "touch should-not-run"],
+    );
+    assert!(repo.merge_guard().is_err());
+    // verification_guard watches filters only, not merge drivers.
+    repo.verification_guard().unwrap();
+}
+
+#[test]
+fn guards_ignore_host_level_filter_and_driver_config() {
+    if std::env::var_os("DUET_GUARD_HOST_CONFIG_INNER").is_none() {
+        // Re-run this single test in a child process whose global git config
+        // carries LFS-style filters and a custom merge driver, the way a
+        // GitHub-hosted runner (or any LFS-equipped machine) looks. Env vars
+        // are process-global, so this cannot be done in-process without
+        // racing the other tests in this binary.
+        let host = tempfile::tempdir().unwrap();
+        let global = host.path().join("global.gitconfig");
+        fs::write(
+            &global,
+            "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n[merge \"hostdriver\"]\n\tdriver = touch should-not-run\n",
+        )
+        .unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "guards_ignore_host_level_filter_and_driver_config",
+                "--nocapture",
+            ])
+            .env("DUET_GUARD_HOST_CONFIG_INNER", "1")
+            .env("GIT_CONFIG_GLOBAL", &global)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let dir = fixture();
+    let repo = Repository::open(dir.path()).unwrap();
+    repo.verification_guard().unwrap();
+    repo.merge_guard().unwrap();
+}

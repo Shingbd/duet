@@ -92,9 +92,15 @@ impl Repository {
     }
 
     pub fn verification_guard(&self) -> Result<()> {
+        // Scope: only this repository's own config condemns it. Host-level
+        // (system/global) definitions — e.g. the Git LFS filters installed on
+        // most dev machines and on GitHub-hosted runners — are the machine's
+        // standard tooling, not this clone's setup, and must not reject an
+        // otherwise plain repository.
         let output = self.git_output(
             &[
                 "config",
+                "--local",
                 "--get-regexp",
                 r"^filter\..*\.(clean|smudge|process)$",
             ],
@@ -166,9 +172,13 @@ impl Repository {
                     || l.as_bytes().first().is_some_and(u8::is_ascii_lowercase)),
             "主项目含 skip-worktree/assume-unchanged，不能可靠检查人工文件"
         );
+        // Same scoping as verification_guard: --local only, so host-level
+        // filter/driver definitions (Git LFS being the common case) do not
+        // condemn a repository that never configured them itself.
         let custom = self.git_output(
             &[
                 "config",
+                "--local",
                 "--get-regexp",
                 r"^(merge\..*\.driver|filter\..*\.(smudge|process))$",
             ],
