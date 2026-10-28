@@ -3,7 +3,7 @@ name = "duet-workbench"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Local-first terminal workspace for human-AI code review and learning"
+description = "Local-first terminal learning workbench for the AI era: read projects, build projects, and truly master the code — in any language"
 publish = false
 
 [dependencies]
